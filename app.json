@@ -2,13 +2,14 @@
   "expo": {
     "name": "Dungeon Calendar",
     "slug": "dungeon-calendar",
-    "android": {
-      "package": "com.anonymous.dungeoncalendar",
-      "versionCode": 9
+    "scheme": "dungeoncalendar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/app-icon.png",
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
     },
-    "version": "1.0.9",
-    "plugins": [
-      "@react-native-google-signin/google-signin"
-    ]
+    "description": "Dungeon Calendar helps Dungeons & Dragons and tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures."
   }
 }
