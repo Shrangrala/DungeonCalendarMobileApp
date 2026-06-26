@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Dungeon Calendar",
+    "slug": "dungeon-calendar",
+    "android": {
+      "package": "com.anonymous.dungeoncalendar",
+      "versionCode": 7
+    },
+    "version": "1.0.7",
+    "plugins": [
+      "@react-native-google-signin/google-signin"
+    ]
+  }
+}

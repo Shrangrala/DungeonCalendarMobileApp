@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1089961645011",
+    "project_id": "dungeon-calendar-app",
+    "storage_bucket": "dungeon-calendar-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1089961645011:android:a9434ff838f8558a1e5526",
+        "android_client_info": {
+          "package_name": "com.shrangrala.dungeoncalendar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAW-dX7JKDWYh-zmr-eQUhTcA3f-GpYFPY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
