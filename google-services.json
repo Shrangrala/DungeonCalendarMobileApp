@@ -1,18 +1,32 @@
 {
   "project_info": {
     "project_number": "1089961645011",
+    "firebase_url": "https://dungeon-calendar-app-default-rtdb.firebaseio.com",
     "project_id": "dungeon-calendar-app",
     "storage_bucket": "dungeon-calendar-app.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1089961645011:android:a9434ff838f8558a1e5526",
+        "mobilesdk_app_id": "1:1089961645011:android:87e9da1364f224581e5526",
         "android_client_info": {
-          "package_name": "com.shrangrala.dungeoncalendar"
+          "package_name": "com.anonymous.dungeoncalendar"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1089961645011-79ari0vkebtu1jrop2fu15a17v4v7bj5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anonymous.dungeoncalendar",
+            "certificate_hash": "6e9267ae6cca0acc56ca899322658de94ad650b8"
+          }
+        },
+        {
+          "client_id": "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAW-dX7JKDWYh-zmr-eQUhTcA3f-GpYFPY"
@@ -20,7 +34,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
