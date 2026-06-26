@@ -39,6 +39,6 @@ android\app\build\outputs\bundle\release\app-release.aab
 
 ## Version
 
-This package is set to Android `versionCode 7` and `versionName 1.0.7`.
+This package is set to Android `versionCode 8` and `versionName 1.0.7`.
 
 If Google Play says version code was already used, increase both `app.json` and `android/app/build.gradle` to the next number.
