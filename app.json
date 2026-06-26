@@ -4,9 +4,9 @@
     "slug": "dungeon-calendar",
     "android": {
       "package": "com.anonymous.dungeoncalendar",
-      "versionCode": 8
+      "versionCode": 9
     },
-    "version": "1.0.8",
+    "version": "1.0.9",
     "plugins": [
       "@react-native-google-signin/google-signin"
     ]
