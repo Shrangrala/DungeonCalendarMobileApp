@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Image,
@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
-import { auth, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+import { auth, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -41,6 +41,13 @@ const COLORS = {
 };
 
 const isDungeonMaster = true;
+
+function getFirebaseUserProfile(user) {
+  const displayName = user?.displayName || user?.providerData?.[0]?.displayName || "Dungeon Calendar User";
+  const email = user?.email || user?.providerData?.[0]?.email || "No email connected";
+  const avatar = user?.photoURL || user?.providerData?.[0]?.photoURL || null;
+  return { displayName, email, avatar };
+}
 
 const campaigns = [
   { id: "curse", name: "Curse of Strahd", level: "Level 7", next: "May 24, 2025", dm: "You", status: "Active", color: "#3b0764" },
@@ -371,7 +378,7 @@ function Campaigns({ navigate, openSettings }) {
   );
 }
 
-function CampaignDetail({ openSettings }) {
+function CampaignDetail({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Campaign Details" subtitle="Curse of Strahd" onSettings={openSettings} />
@@ -389,7 +396,7 @@ function CampaignDetail({ openSettings }) {
   );
 }
 
-function Players({ openSettings }) {
+function Players({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Players" subtitle="Manage players and availability" onSettings={openSettings} />
@@ -432,7 +439,7 @@ function Players({ openSettings }) {
   );
 }
 
-function Results({ openSettings }) {
+function Results({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Results" subtitle="Compare proposed session dates" onSettings={openSettings} />
@@ -460,7 +467,7 @@ function Results({ openSettings }) {
   );
 }
 
-function SessionDetails({ openSettings }) {
+function SessionDetails({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Session Details" subtitle="Storm King’s Thunder" onSettings={openSettings} />
@@ -506,21 +513,26 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout 
   );
 }
 
-function ProfileScreen({ openSettings }) {
+function ProfileScreen({ navigate, openSettings, user }) {
+  const profile = getFirebaseUserProfile(user);
   return (
     <Screen>
-      <Header title="Profile" subtitle="Profile Information" onSettings={openSettings} />
+      <Header title="Profile" subtitle="Firebase Account" onSettings={openSettings} />
       <Card>
-        <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
-        <SettingsRow label="Display Name" detail="DM (You)" onPress={() => navigate("profileEdit")} />
-        <SettingsRow label="Email" detail="dm@example.com" onPress={() => navigate("profileEdit")} />
-        <SettingsRow label="Role" detail="Dungeon Master" onPress={() => navigate("profileEdit")} />
+        {profile.avatar ? (
+          <Image source={{ uri: profile.avatar }} style={styles.profileLogo} resizeMode="cover" />
+        ) : (
+          <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
+        )}
+        <SettingsRow label="Display Name" detail={profile.displayName} onPress={() => navigate("profileEdit")} />
+        <SettingsRow label="Email" detail={profile.email} onPress={() => navigate("profileEdit")} />
+        <SettingsRow label="Account ID" detail={user?.uid || "Signed in with Firebase"} onPress={() => navigate("profileEdit")} />
       </Card>
     </Screen>
   );
 }
 
-function CampaignSettings({ openSettings }) {
+function CampaignSettings({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Campaign Settings" subtitle="Default settings" onSettings={openSettings} />
@@ -534,7 +546,7 @@ function CampaignSettings({ openSettings }) {
   );
 }
 
-function Notifications({ openSettings }) {
+function Notifications({ navigate, openSettings }) {
   return (
     <Screen>
       <Header title="Notifications" subtitle="Reminder settings" onSettings={openSettings} />
@@ -698,12 +710,13 @@ function AboutPage({ openSettings }) {
 }
 
 
-function EditableField({ label, value }) {
-  const [text, setText] = useState(value);
+function EditableField({ label, value, editable = true }) {
+  const [text, setText] = useState(value || "");
+  useEffect(() => setText(value || ""), [value]);
   return (
     <View style={styles.editableField}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput value={text} onChangeText={setText} style={styles.fieldInput} placeholderTextColor="#6b7280" />
+      <TextInput value={text} onChangeText={setText} editable={editable} selectTextOnFocus={editable} style={[styles.fieldInput, !editable && styles.fieldInputDisabled]} placeholderTextColor="#6b7280" />
     </View>
   );
 }
@@ -781,16 +794,22 @@ function AvailabilityScreen({ openSettings }) {
   );
 }
 
-function ProfileEditScreen({ openSettings }) {
+function ProfileEditScreen({ openSettings, user }) {
+  const profile = getFirebaseUserProfile(user);
   return (
     <Screen>
-      <Header title="Edit Profile" subtitle="Profile information" onSettings={openSettings} />
+      <Header title="Edit Profile" subtitle="Firebase account information" onSettings={openSettings} />
       <Card>
-        <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
-        <EditableField label="Display Name" value="DM (You)" />
-        <EditableField label="Email" value="dm@example.com" />
-        <EditableField label="Role" value="Dungeon Master" />
-        <TouchableOpacity style={styles.primaryButton}>
+        {profile.avatar ? (
+          <Image source={{ uri: profile.avatar }} style={styles.profileLogo} resizeMode="cover" />
+        ) : (
+          <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
+        )}
+        <EditableField label="Display Name" value={profile.displayName} />
+        <EditableField label="Email" value={profile.email} editable={false} />
+        <EditableField label="Firebase UID" value={user?.uid || ""} editable={false} />
+        <Text style={styles.helperText}>Profile edits should be saved to the signed-in Firebase user record. Email and UID are shown from Firebase Auth and are not dummy data.</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => Alert.alert("Profile", "Your profile is linked to your Firebase account.")}>
           <Text style={styles.primaryButtonText}>Save Profile</Text>
         </TouchableOpacity>
       </Card>
@@ -869,7 +888,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
   );
 }
 
-function DeleteAccountModal({ visible, onClose }) {
+function DeleteAccountModal({ visible, onClose, onDeleteAccount }) {
   const [confirmText, setConfirmText] = useState("");
   const canDelete = confirmText === "DELETE";
 
@@ -880,7 +899,7 @@ function DeleteAccountModal({ visible, onClose }) {
 
   const confirmDelete = () => {
     if (!canDelete) return;
-    setUser(null);
+    onDeleteAccount?.();
     closeAndReset();
   };
 
@@ -956,6 +975,13 @@ export default function DungeonCalendarMobileApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+    });
+    return unsubscribe;
+  }, []);
+
   const navigate = (next) => {
     if (next === "more") {
       setSettingsOpen(true);
@@ -1009,6 +1035,7 @@ export default function DungeonCalendarMobileApp() {
 
   const props = {
     navigate,
+    user,
     openSettings: () => setSettingsOpen(true),
     openDeleteAccount: () => setDeleteAccountOpen(true),
     handleLogout,
@@ -1057,7 +1084,7 @@ export default function DungeonCalendarMobileApp() {
       default:
         return <Dashboard {...props} />;
     }
-  }, [route]);
+  }, [route, user]);
 
   if (!user) {
     return <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />;
@@ -1075,7 +1102,7 @@ export default function DungeonCalendarMobileApp() {
         openDeleteAccount={() => setDeleteAccountOpen(true)}
         handleLogout={handleLogout}
       />
-      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} />
+      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOut().catch(() => {}); await GoogleSignin.signOut().catch(() => {}); setUser(null); }} />
     </View>
   );
 }

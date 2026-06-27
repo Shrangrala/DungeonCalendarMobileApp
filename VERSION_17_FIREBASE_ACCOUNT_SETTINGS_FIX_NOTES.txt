@@ -1,0 +1,10 @@
+Dungeon Calendar Mobile App - Version 17 Firebase Account and Settings Fix
+
+Changes:
+- Removed hardcoded dm@example.com profile placeholder from mobile Profile and Edit Profile screens.
+- Profile screens now read display name, email, photo URL, and UID from the signed-in Firebase Auth user.
+- Added Firebase Auth state listener so the app stays linked to the current Firebase user after login/restart.
+- Fixed settings crashes caused by screens using navigate without receiving it as a prop.
+- Fixed Delete Account modal crash caused by calling setUser outside component scope.
+- Added safe editable fields that handle missing profile data without crashing.
+- Bumped Android versionCode to 17 and versionName/app/package versions to 1.0.17 for Google Play upload.

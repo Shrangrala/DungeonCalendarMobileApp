@@ -1,0 +1,14 @@
+Dungeon Calendar Mobile Version 14 Functional Layout Fix
+
+Fixed:
+- Dashboard stat cards now use explicit 48% width with no unsupported gap spacing, preventing the one-column broken layout shown on small Android screens.
+- All bottom navigation buttons route to pages.
+- All settings/menu rows route to pages.
+- Log Out now opens a confirmation alert and returns to the Login screen.
+- Delete Account flow remains available and requires typing DELETE.
+- Login, Dashboard, Profile, and About use the uploaded Dungeon Calendar logo.
+- Campaign cards, player rows, quick actions, settings rows, and plan buttons are clickable.
+- Version remains versionCode 15 / versionName 1.0.15.
+
+Production note:
+Firebase signOut/delete account calls should replace the local demo state when connecting final production auth behavior.
