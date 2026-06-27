@@ -18,6 +18,10 @@
     },
     "plugins": [
       "@react-native-google-signin/google-signin"
+    ],
+    "platforms": [
+      "android",
+      "web"
     ]
   }
 }

@@ -16,17 +16,25 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
-import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut as firebaseSignOut } from "./firebase";
+import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signOut as firebaseSignOut } from "./firebase";
 import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
-GoogleSignin.configure({
-  webClientId: WEB_CLIENT_ID,
-  offlineAccess: false,
-});
+if (Platform.OS !== "web") {
+  GoogleSignin.configure({
+    webClientId: WEB_CLIENT_ID,
+    offlineAccess: false,
+  });
+}
+
+async function signOutGoogleProviderSafely() {
+  if (Platform.OS === "web") return;
+  await GoogleSignin.signOut().catch(() => {});
+  await GoogleSignin.revokeAccess().catch(() => {});
+}
 
 const COLORS = {
   bg: "#050505",
@@ -1908,11 +1916,16 @@ export default function DungeonCalendarMobileApp() {
   const handleGoogleLogin = async () => {
     setAuthError("");
     try {
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-      const signInResult = await GoogleSignin.signIn();
-      const idToken = signInResult?.data?.idToken || signInResult?.idToken;
-      if (!idToken) throw new Error("Google Sign-In did not return an ID token.");
-      const result = await signInToFirebaseWithGoogleIdToken(idToken);
+      let result;
+      if (Platform.OS === "web") {
+        result = await signInToFirebaseWithGooglePopup();
+      } else {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+        const signInResult = await GoogleSignin.signIn();
+        const idToken = signInResult?.data?.idToken || signInResult?.idToken;
+        if (!idToken) throw new Error("Google Sign-In did not return an ID token.");
+        result = await signInToFirebaseWithGoogleIdToken(idToken);
+      }
       setUser(result.user);
       setRoute("dashboard");
     } catch (error) {
@@ -1933,8 +1946,7 @@ export default function DungeonCalendarMobileApp() {
     setDeleteAccountOpen(false);
     setAuthError("");
     try {
-      await GoogleSignin.signOut().catch(() => {});
-      await GoogleSignin.revokeAccess().catch(() => {});
+      await signOutGoogleProviderSafely();
       await firebaseSignOut().catch(() => {});
     } finally {
       setCampaigns([]);
@@ -2039,7 +2051,7 @@ export default function DungeonCalendarMobileApp() {
         handleLogout={handleLogout}
         proposedDates={proposedDates}
       />
-      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await GoogleSignin.signOut().catch(() => {}); await GoogleSignin.revokeAccess().catch(() => {}); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
+      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
     </View>
   );
 }

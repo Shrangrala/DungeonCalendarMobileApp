@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut as firebaseSignOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -23,6 +23,12 @@ export { onAuthStateChanged };
 export async function signInToFirebaseWithGoogleIdToken(idToken) {
   const credential = GoogleAuthProvider.credential(idToken);
   return signInWithCredential(auth, credential);
+}
+
+export async function signInToFirebaseWithGooglePopup() {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  return signInWithPopup(auth, provider);
 }
 
 export async function signOut() {
