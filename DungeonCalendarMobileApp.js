@@ -254,6 +254,101 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
   };
 }
 
+
+
+function campaignPlayerNameForUser(campaign = {}, user = null, userProfile = null) {
+  if (!campaign || !user) return "";
+  const uid = user.uid || "";
+  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  const profile = getFirebaseUserProfile(user, userProfile);
+  const maps = [
+    campaign.campaignPlayerNames,
+    campaign.playerNames,
+    campaign.characterNames,
+    campaign.campaignCharacterNames,
+  ].filter(Boolean);
+  for (const map of maps) {
+    if (uid && map[uid]) return map[uid];
+    if (email && map[email]) return map[email];
+  }
+  const player = (campaign.invitedPlayers || []).find((p) => {
+    const playerId = p.id || p.uid || p.userId || "";
+    const playerEmail = normalizeEmail(p.email || "");
+    return (uid && playerId === uid) || (email && playerEmail === email);
+  });
+  return (
+    player?.campaignPlayerName ||
+    player?.characterName ||
+    player?.playerName ||
+    player?.name ||
+    profile.displayName ||
+    ""
+  );
+}
+
+async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = null, playerName = "") {
+  if (!campaign?.id) throw new Error("Missing campaign.");
+  if (!user?.uid) throw new Error("You must be signed in to save your player name.");
+  const uid = user.uid;
+  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  const cleanName = String(playerName || "").trim();
+  const profile = getFirebaseUserProfile(user, userProfile);
+  const existingInvitedPlayers = Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [];
+  let matched = false;
+  const invitedPlayers = existingInvitedPlayers.map((player) => {
+    const playerId = player.id || player.uid || player.userId || "";
+    const playerEmail = normalizeEmail(player.email || "");
+    const isMatch = (playerId && playerId === uid) || (email && playerEmail === email);
+    if (!isMatch) return player;
+    matched = true;
+    return {
+      ...player,
+      id: player.id || uid,
+      uid: player.uid || uid,
+      email: player.email || email,
+      name: cleanName || player.name || profile.displayName,
+      playerName: cleanName,
+      campaignPlayerName: cleanName,
+      characterName: cleanName,
+    };
+  });
+  if (!matched) {
+    invitedPlayers.push({
+      id: uid,
+      uid,
+      email,
+      name: cleanName || profile.displayName,
+      playerName: cleanName,
+      campaignPlayerName: cleanName,
+      characterName: cleanName,
+      role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player",
+      invitePending: false,
+      campaignIds: [campaign.id],
+    });
+  }
+  await enableNetwork(db).catch(() => {});
+  await setDoc(doc(db, "campaigns", campaign.id), {
+    campaignPlayerNames: {
+      ...(campaign.campaignPlayerNames || {}),
+      [uid]: cleanName,
+      ...(email ? { [email]: cleanName } : {}),
+    },
+    playerNames: {
+      ...(campaign.playerNames || {}),
+      [uid]: cleanName,
+      ...(email ? { [email]: cleanName } : {}),
+    },
+    characterNames: {
+      ...(campaign.characterNames || {}),
+      [uid]: cleanName,
+      ...(email ? { [email]: cleanName } : {}),
+    },
+    invitedPlayers,
+    updatedAt: new Date().toISOString(),
+    updatedAtServer: serverTimestamp(),
+  }, { merge: true });
+}
+
 function campaignPlayers(campaign, user) {
   if (!campaign) return user ? [playerFromFirebaseUser(user)] : [];
   const byKey = new Map();
