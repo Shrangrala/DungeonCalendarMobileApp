@@ -223,6 +223,18 @@ function getFirebaseUserProfile(user, userProfile = null) {
   return { displayName, email, avatar, phone };
 }
 
+
+function publicProfileDisplayName(profile = {}) {
+  return (
+    profile.displayName ||
+    profile.name ||
+    profile.username ||
+    profile.playerName ||
+    profile.email ||
+    ""
+  );
+}
+
 function playerFromFirebaseUser(user, activeCampaignId = "", nameOverride = "") {
   const profile = getFirebaseUserProfile(user);
   return {
@@ -389,21 +401,38 @@ function proposedDatesForCampaign(campaign) {
 }
 
 
-function campaignDungeonMasterDisplayName(campaign = {}, user = null, userProfile = null) {
+function campaignDungeonMasterDisplayName(campaign = {}, user = null, userProfile = null, userProfiles = {}) {
   const profile = getFirebaseUserProfile(user, userProfile);
-  const dmIds = new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean));
-  if (user?.uid && dmIds.has(user.uid)) return profile.displayName;
+  const dmIds = Array.from(new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean)));
+  if (user?.uid && dmIds.includes(user.uid)) return profile.displayName;
+
+  for (const id of dmIds) {
+    const matchedProfile = userProfiles?.[id];
+    const name = publicProfileDisplayName(matchedProfile);
+    if (name) return name;
+  }
+
   const invitedDm = (campaign.invitedPlayers || []).find((player) => {
-    const id = player.id || player.uid || "";
-    return id && dmIds.has(id);
+    const id = player.id || player.uid || player.userId || "";
+    return id && dmIds.includes(id);
   });
+
   return (
+    campaign.dmDisplayName ||
+    campaign.dmUsername ||
     campaign.dmName ||
+    campaign.dungeonMasterDisplayName ||
+    campaign.dungeonMasterUsername ||
     campaign.dungeonMasterName ||
+    campaign.ownerDisplayName ||
+    campaign.ownerUsername ||
     campaign.ownerName ||
+    campaign.createdByDisplayName ||
+    campaign.createdByUsername ||
     campaign.createdByName ||
-    invitedDm?.name ||
     invitedDm?.displayName ||
+    invitedDm?.username ||
+    invitedDm?.name ||
     "Dungeon Master"
   );
 }
@@ -714,9 +743,11 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
             <Icon>▣</Icon>
             <Text style={styles.sectionTitle}>Upcoming Session</Text>
           </View>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("results") }>
-            <Text style={styles.outlineButtonText}>View Results</Text>
-          </TouchableOpacity>
+          {isDungeonMaster ? (
+            <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("results") }>
+              <Text style={styles.outlineButtonText}>View Results</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
         {activeCampaign && nextDate ? (
           <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
@@ -751,7 +782,7 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <View style={styles.quickGrid}>
           <QuickAction icon="▣" label={isDungeonMaster ? "Propose Dates" : "Availability"} detail={isDungeonMaster ? "DM only" : "Your response"} onPress={() => navigate("calendar")} />
-          <QuickAction icon="▥" label="View Results" detail="Compare dates" onPress={() => navigate("results")} />
+          {isDungeonMaster ? <QuickAction icon="▥" label="View Results" detail="Compare dates" onPress={() => navigate("results")} /> : null}
           <QuickAction icon="⚙" label="Campaigns" detail="Linked data" onPress={() => navigate("campaigns")} />
         </View>
       </Card>
@@ -1041,7 +1072,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
         }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity>
       </View>
       {campaigns.length ? campaigns.map((c) => {
-        const dm = campaignDungeonMasterDisplayName(c, user, userProfile);
+        const dm = campaignDungeonMasterDisplayName(c, user, userProfile, userProfiles);
         const next = c.chosenDate ? dateKeyToParts(c.chosenDate).full : (proposedDatesForCampaign(c)[0]?.full || "No date selected");
         return (
           <TouchableOpacity key={c.id} activeOpacity={0.86} onPress={() => { setSelectedCampaignId(c.id); navigate("campaignDetail"); }}>
@@ -1062,9 +1093,9 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
     </Screen>
   );
 }
-function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, setSelectedCampaignId, setCampaigns }) {
+function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, userProfiles = {}, setSelectedCampaignId, setCampaigns }) {
   if (!activeCampaign) return <SimpleInfoPage title="Campaign Details" openSettings={openSettings}><Text style={styles.notesText}>No campaign is selected.</Text></SimpleInfoPage>;
-  const dmDisplay = campaignDungeonMasterDisplayName(activeCampaign, user, userProfile);
+  const dmDisplay = campaignDungeonMasterDisplayName(activeCampaign, user, userProfile, userProfiles);
   const deleteCurrent = () => {
     if (!userIsDungeonMaster(user, activeCampaign)) return;
     Alert.alert("Delete Campaign", `Permanently delete ${activeCampaign.name}? This removes it from Firebase and from all apps for every player. This cannot be undone.`, [
@@ -2018,7 +2049,7 @@ function SettingsRow({ label, detail, onPress }) {
   );
 }
 
-function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLogout, proposedDates = [] }) {
+function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLogout, proposedDates = [], isDungeonMaster = false }) {
   const settings = [
     ["User Settings", "settings"],
     ["Campaign Settings", "campaignSettings"],
@@ -2038,22 +2069,24 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
           </View>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.drawerScrollContent}>
 
-          <Card>
-            <Text style={styles.menuGroup}>Recent Results</Text>
-            {proposedDates.map((d) => (
-              <View key={d.key} style={styles.resultRow}>
-                <Icon>▥</Icon>
-                <View style={styles.resultInfo}>
-                  <Text style={styles.resultName}>{d.label}</Text>
-                  <Text style={styles.resultMeta}>{d.available} available · {d.unavailable} unavailable</Text>
+          {isDungeonMaster ? (
+            <Card>
+              <Text style={styles.menuGroup}>Recent Results</Text>
+              {proposedDates.map((d) => (
+                <View key={d.key} style={styles.resultRow}>
+                  <Icon>▥</Icon>
+                  <View style={styles.resultInfo}>
+                    <Text style={styles.resultName}>{d.label}</Text>
+                    <Text style={styles.resultMeta}>{d.available} available · {d.unavailable} unavailable</Text>
+                  </View>
                 </View>
-              </View>
-            ))}
-            <TouchableOpacity style={styles.menuItem} onPress={() => { onClose(); navigate("results"); }}>
-              <Text style={styles.menuItemText}>View All Results</Text>
-              <Text style={styles.chevron}>›</Text>
-            </TouchableOpacity>
-          </Card>
+              ))}
+              <TouchableOpacity style={styles.menuItem} onPress={() => { onClose(); navigate("results"); }}>
+                <Text style={styles.menuItemText}>View All Results</Text>
+                <Text style={styles.chevron}>›</Text>
+              </TouchableOpacity>
+            </Card>
+          ) : null}
 
           <Card>
             <Text style={styles.menuGroup}>Settings</Text>
@@ -2179,6 +2212,7 @@ export default function DungeonCalendarMobileApp() {
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [syncStatus, setSyncStatus] = useState("connecting");
   const [userProfile, setUserProfile] = useState(null);
+  const [userProfiles, setUserProfiles] = useState({});
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
@@ -2192,6 +2226,7 @@ export default function DungeonCalendarMobileApp() {
       setCampaigns([]);
       setSelectedCampaignId("");
       setUserProfile(null);
+      setUserProfiles({});
       setSyncStatus("signed-out");
       return undefined;
     }
@@ -2205,6 +2240,16 @@ export default function DungeonCalendarMobileApp() {
     }, (error) => {
       console.warn("Mobile profile sync failed:", error);
       setUserProfile(null);
+    });
+    const unsubscribeUserProfiles = onSnapshot(collection(db, "users"), { includeMetadataChanges: true }, (snapshot) => {
+      const profileMap = {};
+      snapshot.docs.forEach((item) => {
+        profileMap[item.id] = { id: item.id, ...item.data() };
+      });
+      setUserProfiles(profileMap);
+    }, (error) => {
+      console.warn("Mobile user profile map sync failed:", error);
+      setUserProfiles({});
     });
     unsubscribeSync = onSnapshotsInSync(db, () => {
       setSyncStatus("live");
@@ -2225,6 +2270,7 @@ export default function DungeonCalendarMobileApp() {
     return () => {
       unsubscribe();
       unsubscribeProfile();
+      unsubscribeUserProfiles();
       unsubscribeSync();
     };
   }, [user]);
@@ -2283,6 +2329,7 @@ export default function DungeonCalendarMobileApp() {
     } finally {
       setCampaigns([]);
       setUserProfile(null);
+      setUserProfiles({});
       setSelectedCampaignId(null);
       setUser(null);
       setRoute("dashboard");
@@ -2313,6 +2360,7 @@ export default function DungeonCalendarMobileApp() {
     syncStatus,
     refreshFirebaseNetwork,
     userProfile,
+    userProfiles,
     plan,
     billingInterval,
   };
@@ -2385,6 +2433,7 @@ export default function DungeonCalendarMobileApp() {
         openDeleteAccount={() => setDeleteAccountOpen(true)}
         handleLogout={handleLogout}
         proposedDates={proposedDates}
+        isDungeonMaster={isDungeonMaster}
       />
       <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
     </View>
