@@ -1046,9 +1046,20 @@ function PrivacyPolicyMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Privacy Policy</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>Dungeon Calendar collects account, campaign, scheduling, and subscription information necessary to provide the service.</Text>
-      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Subscription processing is handled by Stripe.</Text>
-      <Text style={styles.notesText}>We do not sell personal information.</Text>
-      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+      <Text style={styles.sectionTitle}>Information We Collect</Text>
+      <Text style={styles.notesText}>We may collect your name, username, email address, optional phone number, profile settings, campaign membership, character names, availability responses, campaign settings, and subscription status.</Text>
+      <Text style={styles.sectionTitle}>How We Use Information</Text>
+      <Text style={styles.notesText}>We use this information to operate Dungeon Calendar, manage campaigns, schedule sessions, save user settings, process subscription access, provide support, and improve reliability.</Text>
+      <Text style={styles.sectionTitle}>Firebase and Stripe</Text>
+      <Text style={styles.notesText}>Dungeon Calendar uses Firebase for authentication and cloud storage. Stripe processes subscription payments. Dungeon Calendar does not store full credit card numbers.</Text>
+      <Text style={styles.sectionTitle}>Data Sharing</Text>
+      <Text style={styles.notesText}>We do not sell personal information. Data may be shared with service providers necessary to operate the app, including Firebase and Stripe.</Text>
+      <Text style={styles.sectionTitle}>Account Updates and Deletion</Text>
+      <Text style={styles.notesText}>You may update profile information in the app. For account deletion or privacy support, contact support@dungeoncalendar.com.</Text>
+      <Text style={styles.sectionTitle}>Children's Privacy</Text>
+      <Text style={styles.notesText}>Dungeon Calendar is not directed toward children under 13 without appropriate parental or guardian involvement.</Text>
+      <Text style={styles.sectionTitle}>Contact</Text>
+      <Text style={styles.notesText}>Email: support@dungeoncalendar.com</Text>
     </SimpleInfoPage>
   );
 }
@@ -1059,9 +1070,18 @@ function TermsOfServiceMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Terms of Service</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>By using Dungeon Calendar, you agree to use the service lawfully and responsibly.</Text>
-      <Text style={styles.notesText}>Subscriptions are managed through Stripe and may be modified or cancelled according to the applicable subscription terms.</Text>
-      <Text style={styles.notesText}>Users are responsible for campaign content they create and share.</Text>
-      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+      <Text style={styles.sectionTitle}>Use of Dungeon Calendar</Text>
+      <Text style={styles.notesText}>Dungeon Calendar is a scheduling and campaign management tool for tabletop role-playing games. You agree to use the service only for lawful and appropriate purposes.</Text>
+      <Text style={styles.sectionTitle}>Accounts</Text>
+      <Text style={styles.notesText}>You are responsible for maintaining your account security and for activity under your account.</Text>
+      <Text style={styles.sectionTitle}>Campaign Content</Text>
+      <Text style={styles.notesText}>You are responsible for campaign names, character names, invites, availability data, and other content you create or share.</Text>
+      <Text style={styles.sectionTitle}>Subscriptions and Billing</Text>
+      <Text style={styles.notesText}>Paid plans are processed through Stripe. Subscription features, prices, and billing intervals may change over time. Users are responsible for managing their subscriptions according to the applicable Stripe checkout and billing terms.</Text>
+      <Text style={styles.sectionTitle}>Availability of Service</Text>
+      <Text style={styles.notesText}>We try to keep Dungeon Calendar available, but we do not guarantee uninterrupted access. Features may change as the app improves.</Text>
+      <Text style={styles.sectionTitle}>Contact</Text>
+      <Text style={styles.notesText}>For support or terms questions, contact support@dungeoncalendar.com.</Text>
     </SimpleInfoPage>
   );
 }
