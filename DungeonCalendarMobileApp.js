@@ -16,7 +16,8 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
-import { auth, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+import { auth, db, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, snapshotsInSync } from "firebase/firestore";
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -40,7 +41,66 @@ const COLORS = {
   amber: "#f59e0b",
 };
 
-const isDungeonMaster = true;
+function normalizeEmail(email = "") {
+  return String(email || "").trim().toLowerCase();
+}
+
+function makeId(prefix = "item") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function dateKeyToParts(key = "") {
+  const date = new Date(`${key}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return { month: "---", day: "--", weekday: "---", label: key || "No date" };
+  return {
+    month: date.toLocaleString(undefined, { month: "short" }).toUpperCase(),
+    day: String(date.getDate()).padStart(2, "0"),
+    weekday: date.toLocaleString(undefined, { weekday: "short" }).toUpperCase(),
+    label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    full: date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }),
+  };
+}
+
+function normalizeList(values = []) {
+  return Array.isArray(values) ? values.filter(Boolean) : [];
+}
+
+function normalizeCampaign(campaign = {}) {
+  const id = campaign.id || makeId("campaign");
+  return {
+    ...campaign,
+    id,
+    name: campaign.name || "Untitled Campaign",
+    ownerId: campaign.ownerId || "",
+    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds),
+    memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
+    invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
+    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
+    availability: campaign.availability || {},
+    unavailable: campaign.unavailable || {},
+    chosenDate: campaign.chosenDate || "",
+    generatedSessionDates: normalizeList(campaign.generatedSessionDates || []),
+    manuallySelectedDates: normalizeList(campaign.manuallySelectedDates || []),
+    sessionTime: campaign.sessionTime || "18:00",
+    sessionDuration: Number(campaign.sessionDuration || 4),
+    reminderHours: Number(campaign.reminderHours || 24),
+    level: campaign.level || campaign.campaignLevel || "",
+    defaultLocation: campaign.defaultLocation || campaign.location || "",
+  };
+}
+
+function visibleToUser(campaign, user) {
+  if (!user) return false;
+  const uid = user.uid;
+  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  return (
+    campaign.ownerId === uid ||
+    campaign.dungeonMasterIds?.includes(uid) ||
+    campaign.memberIds?.includes(uid) ||
+    campaign.invitedPlayers?.some((p) => p.id === uid || p.uid === uid || normalizeEmail(p.email) === email) ||
+    (!!email && campaign.invitedEmails?.includes(email))
+  );
+}
 
 function getFirebaseUserProfile(user) {
   const displayName = user?.displayName || user?.providerData?.[0]?.displayName || "Dungeon Calendar User";
@@ -49,26 +109,90 @@ function getFirebaseUserProfile(user) {
   return { displayName, email, avatar };
 }
 
-const campaigns = [
-  { id: "curse", name: "Curse of Strahd", level: "Level 7", next: "May 24, 2025", dm: "You", status: "Active", color: "#3b0764" },
-  { id: "storm", name: "Storm King’s Thunder", level: "Level 5", next: "May 31, 2025", dm: "You", status: "Active", color: "#0f2741" },
-  { id: "waterdeep", name: "Waterdeep: Dragon Heist", level: "Level 3", next: "Jun 7, 2025", dm: "You", status: "Active", color: "#431407" },
-  { id: "lost", name: "Lost Mines of Phandelver", level: "Level 2", next: "Jun 14, 2025", dm: "You", status: "Active", color: "#14532d" },
-];
+function playerFromFirebaseUser(user, activeCampaignId = "") {
+  const profile = getFirebaseUserProfile(user);
+  return {
+    id: user?.uid || "current-user",
+    name: profile.displayName,
+    email: profile.email,
+    role: "Player",
+    campaignIds: activeCampaignId ? [activeCampaignId] : [],
+    campaignCharacterNames: {},
+    color: COLORS.green,
+    status: "Active",
+  };
+}
 
-const proposedDates = [
-  { key: "may24", month: "MAY", day: "24", weekday: "SAT", label: "May 24", available: 5, unavailable: 1, status: "selected" },
-  { key: "may31", month: "MAY", day: "31", weekday: "SAT", label: "May 31", available: 4, unavailable: 2, status: "proposed" },
-  { key: "jun07", month: "JUN", day: "07", weekday: "SAT", label: "Jun 7", available: 3, unavailable: 3, status: "proposed" },
-];
+function campaignPlayerRecord(player = {}, campaignId = "") {
+  const email = normalizeEmail(player.email || "");
+  return {
+    id: player.id || player.uid || email || makeId("player"),
+    name: player.name || player.displayName || player.username || email || "Player",
+    email,
+    role: player.role || "Player",
+    campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
+    campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: player.characterName || "" } : {}),
+    color: player.color || COLORS.green,
+    invitePending: player.invitePending !== false,
+  };
+}
 
-const players = [
-  { name: "Alice", role: "Level 7 Paladin", status: "Available", color: COLORS.green },
-  { name: "Brandon", role: "Level 7 Ranger", status: "Available", color: COLORS.green },
-  { name: "Cody", role: "Level 7 Wizard", status: "Unavailable", color: COLORS.red },
-  { name: "Jessica", role: "Level 7 Rogue", status: "Available", color: COLORS.green },
-  { name: "DM (You)", role: "Dungeon Master", status: "Available", color: COLORS.green },
-];
+function campaignPlayers(campaign, user) {
+  if (!campaign) return user ? [playerFromFirebaseUser(user)] : [];
+  const byKey = new Map();
+  const add = (player) => {
+    const record = campaignPlayerRecord(player, campaign.id);
+    const key = normalizeEmail(record.email) || record.id;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...record });
+  };
+  if (user) add({ ...playerFromFirebaseUser(user, campaign.id), role: campaign.dungeonMasterIds?.includes(user.uid) ? "Dungeon Master" : "Player" });
+  (campaign.invitedPlayers || []).forEach(add);
+  (campaign.memberIds || []).forEach((id) => add({ id, name: id === user?.uid ? getFirebaseUserProfile(user).displayName : "Campaign Member" }));
+  (campaign.invitedEmails || []).forEach((email) => add({ email, name: email, invitePending: true }));
+  return Array.from(byKey.values());
+}
+
+function proposedDatesForCampaign(campaign) {
+  if (!campaign) return [];
+  const keys = Array.from(new Set([
+    ...(campaign.manuallySelectedDates || []),
+    ...(campaign.generatedSessionDates || []),
+    ...Object.keys(campaign.availability || {}),
+    ...Object.keys(campaign.unavailable || {}),
+    campaign.chosenDate,
+  ].filter(Boolean))).sort();
+  return keys.map((key) => {
+    const parts = dateKeyToParts(key);
+    return {
+      key,
+      ...parts,
+      available: (campaign.availability?.[key] || []).length,
+      unavailable: (campaign.unavailable?.[key] || []).length,
+      status: campaign.chosenDate === key ? "selected" : "proposed",
+    };
+  });
+}
+
+function userIsDungeonMaster(user, campaign) {
+  if (!user || !campaign) return false;
+  return campaign.ownerId === user.uid || campaign.dungeonMasterIds?.includes(user.uid);
+}
+
+async function saveCampaign(campaign) {
+  if (!campaign?.id) return;
+  await enableNetwork(db).catch(() => {});
+  await setDoc(doc(db, "campaigns", campaign.id), {
+    ...normalizeCampaign(campaign),
+    updatedAt: new Date().toISOString(),
+    updatedAtServer: serverTimestamp(),
+  }, { merge: true });
+}
+
+async function deleteCampaignById(id) {
+  if (!id) return;
+  await enableNetwork(db).catch(() => {});
+  await deleteDoc(doc(db, "campaigns", id));
+}
 
 const planCards = [
   {
@@ -154,17 +278,33 @@ function LoginScreen({ onGoogleLogin, onEmailLogin, authError }) {
   );
 }
 
-function CampaignSelector() {
+function CampaignSelector({ campaigns = [], activeCampaign, setSelectedCampaignId }) {
+  if (!campaigns.length) {
+    return (
+      <View style={styles.selector}>
+        <Text style={styles.selectorIcon}>⚜</Text>
+        <Text style={styles.selectorText}>No campaigns yet</Text>
+        <Text style={styles.selectorPlan}>Create or accept an invite on the main app</Text>
+      </View>
+    );
+  }
   return (
-    <TouchableOpacity style={styles.selector} activeOpacity={0.85}>
+    <View style={styles.selector}>
       <Text style={styles.selectorIcon}>⚜</Text>
-      <Text style={styles.selectorText}>Curse of Strahd</Text>
-      <Text style={styles.selectorPlan}>Guildmaster</Text>
-      <Text style={styles.selectorChevron}>⌄</Text>
-    </TouchableOpacity>
+      <Text style={styles.selectorText}>{activeCampaign?.name || campaigns[0]?.name}</Text>
+      <Text style={styles.selectorPlan}>{campaigns.length} linked campaign{campaigns.length === 1 ? "" : "s"}</Text>
+      {campaigns.length > 1 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+          {campaigns.map((campaign) => (
+            <TouchableOpacity key={campaign.id} style={styles.outlineButton} onPress={() => setSelectedCampaignId(campaign.id)}>
+              <Text style={styles.outlineButtonText}>{campaign.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
   );
 }
-
 function StatCard({ icon, label, value, color }) {
   return (
     <View style={styles.statCard}>
@@ -189,17 +329,20 @@ function DateBadge({ month, day, weekday }) {
   );
 }
 
-function Dashboard({ navigate, openSettings }) {
+function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaign, activePlayers = [], proposedDates = [], isDungeonMaster, setSelectedCampaignId }) {
+  const profile = getFirebaseUserProfile(user);
+  const chosen = activeCampaign?.chosenDate ? dateKeyToParts(activeCampaign.chosenDate) : null;
+  const nextDate = chosen || proposedDates[0] || null;
   return (
     <Screen>
-      <Header title="Welcome back," subtitle="DM (You)" onSettings={openSettings} />
-      <CampaignSelector />
+      <Header title="Welcome back," subtitle={profile.displayName} onSettings={openSettings} />
+      <CampaignSelector campaigns={campaigns} activeCampaign={activeCampaign} setSelectedCampaignId={setSelectedCampaignId} />
 
       <StatGrid>
-        <StatCard icon="▣" label="Campaigns" value="12" color={COLORS.red} />
-        <StatCard icon="♟" label="Players" value="5" color={COLORS.green} />
-        <StatCard icon="▥" label="Proposed Dates" value="3" color={COLORS.blue} />
-        <StatCard icon="◇" label="Plan" value="Guildmaster" color={COLORS.gold} />
+        <StatCard icon="▣" label="Campaigns" value={String(campaigns.length)} color={COLORS.red} />
+        <StatCard icon="♟" label="Players" value={String(activePlayers.length)} color={COLORS.green} />
+        <StatCard icon="▥" label="Dates" value={String(proposedDates.length)} color={COLORS.blue} />
+        <StatCard icon="◇" label="Role" value={isDungeonMaster ? "DM" : "Player"} color={COLORS.gold} />
       </StatGrid>
 
       <Card>
@@ -208,49 +351,50 @@ function Dashboard({ navigate, openSettings }) {
             <Icon>▣</Icon>
             <Text style={styles.sectionTitle}>Upcoming Session</Text>
           </View>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("results")}>
-            <Text style={styles.outlineButtonText}>Auto Pick Best Date</Text>
+          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("results") }>
+            <Text style={styles.outlineButtonText}>View Results</Text>
           </TouchableOpacity>
         </View>
-
-        <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
-          <DateBadge month="MAY" day="24" weekday="SAT" />
-          <View style={styles.sessionArt} />
-          <View style={styles.sessionInfo}>
-            <Text style={styles.sessionTitle}>Storm King’s Thunder</Text>
-            <Text style={styles.sessionText}>Best date from player availability</Text>
-            <Text style={styles.sessionAccent}>5 available · 1 unavailable</Text>
-          </View>
-          <Text style={styles.chevron}>›</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("session")}>
-          <Text style={styles.primaryButtonText}>Open Session</Text>
+        {activeCampaign && nextDate ? (
+          <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
+            <DateBadge month={nextDate.month} day={nextDate.day} weekday={nextDate.weekday} />
+            <View style={styles.sessionArt} />
+            <View style={styles.sessionInfo}>
+              <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
+              <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
+              <Text style={styles.sessionAccent}>{nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.helperText}>No session dates have been created for your linked campaigns yet.</Text>
+        )}
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate(activeCampaign ? "calendar" : "campaigns") }>
+          <Text style={styles.primaryButtonText}>{activeCampaign ? "Open Calendar" : "Open Campaigns"}</Text>
         </TouchableOpacity>
       </Card>
 
       <Card>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Calendar Overview</Text>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("calendar")}>
+          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("calendar") }>
             <Text style={styles.outlineButtonText}>Open Calendar</Text>
           </TouchableOpacity>
         </View>
-        <MiniCalendar compact />
+        <MiniCalendar compact proposedDates={proposedDates} />
       </Card>
 
       <Card>
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <View style={styles.quickGrid}>
-          <QuickAction icon="▣" label="Propose Dates" detail="DM only" onPress={() => navigate("calendar")} />
+          <QuickAction icon="▣" label={isDungeonMaster ? "Propose Dates" : "Availability"} detail={isDungeonMaster ? "DM only" : "Your response"} onPress={() => navigate("calendar")} />
           <QuickAction icon="▥" label="View Results" detail="Compare dates" onPress={() => navigate("results")} />
-          <QuickAction icon="⚙" label="Plan Settings" detail="Subscription" onPress={() => navigate("plan")} />
+          <QuickAction icon="⚙" label="Campaigns" detail="Linked data" onPress={() => navigate("campaigns")} />
         </View>
       </Card>
     </Screen>
   );
 }
-
 function QuickAction({ icon, label, detail, onPress }) {
   return (
     <TouchableOpacity style={styles.quickAction} onPress={onPress} activeOpacity={0.85}>
@@ -261,85 +405,122 @@ function QuickAction({ icon, label, detail, onPress }) {
   );
 }
 
-function MiniCalendar({ compact = false }) {
+function MiniCalendar({ compact = false, proposedDates = [] }) {
+  const now = proposedDates[0]?.key ? new Date(`${proposedDates[0].key}T00:00:00`) : new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const first = new Date(year, month, 1);
+  const start = new Date(year, month, 1 - first.getDay());
+  const selectedKeys = new Set(proposedDates.map((d) => d.key));
+  const chosenKey = proposedDates.find((d) => d.status === "selected")?.key;
+  const cells = Array.from({ length: 35 }, (_, i) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + i);
+    const key = date.toISOString().slice(0, 10);
+    return { key, day: String(date.getDate()), inMonth: date.getMonth() === month };
+  });
   const names = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-  const nums = ["27", "28", "29", "30", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"];
   return (
     <View>
-      <Text style={styles.calendarTitle}>May 2025</Text>
+      <Text style={styles.calendarTitle}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
       <View style={styles.calendarGrid}>
         {names.map((n) => <Text key={n} style={styles.dayName}>{n}</Text>)}
-        {nums.map((n, i) => {
-          const proposed = (n === "24" && i > 20) || (n === "31" && i > 20) || n === "7";
-          const selected = n === "24" && i > 20;
+        {cells.map((cell) => {
+          const proposed = selectedKeys.has(cell.key);
+          const selected = chosenKey === cell.key;
           return (
-            <View key={`${n}-${i}`} style={[styles.dayCell, compact ? styles.dayCellCompact : null, selected ? styles.selectedDay : proposed ? styles.proposedDay : null]}>
-              <Text style={[styles.dayNum, compact ? styles.dayNumCompact : null, selected ? styles.activeDayText : null]}>{n}</Text>
+            <View key={cell.key} style={[styles.dayCell, compact ? styles.dayCellCompact : null, selected ? styles.selectedDay : proposed ? styles.proposedDay : null]}>
+              <Text style={[styles.dayNum, compact ? styles.dayNumCompact : null, selected ? styles.activeDayText : null, !cell.inMonth ? { color: "#52525b" } : null]}>{cell.day}</Text>
               {proposed ? <View style={[styles.eventDot, selected ? styles.goldDot : null]} /> : null}
             </View>
           );
         })}
       </View>
       <View style={styles.legendRow}>
-        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.blue }]} /><Text style={styles.legendText}>DM proposed</Text></View>
-        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.gold }]} /><Text style={styles.legendText}>Best date</Text></View>
+        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.blue }]} /><Text style={styles.legendText}>Proposed</Text></View>
+        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.gold }]} /><Text style={styles.legendText}>Chosen</Text></View>
       </View>
     </View>
   );
 }
-
-function CalendarScreen({ navigate, openSettings }) {
+function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposedDates = [], isDungeonMaster }) {
+  const toggleAvailability = async (dateKey, status) => {
+    if (!activeCampaign || !user?.uid) return;
+    const available = new Set(activeCampaign.availability?.[dateKey] || []);
+    const unavailable = new Set(activeCampaign.unavailable?.[dateKey] || []);
+    if (status === "available") { available.add(user.uid); unavailable.delete(user.uid); }
+    if (status === "unavailable") { unavailable.add(user.uid); available.delete(user.uid); }
+    await saveCampaign({
+      ...activeCampaign,
+      availability: { ...(activeCampaign.availability || {}), [dateKey]: Array.from(available) },
+      unavailable: { ...(activeCampaign.unavailable || {}), [dateKey]: Array.from(unavailable) },
+    });
+  };
+  const removeDate = async (dateKey) => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    const availability = { ...(activeCampaign.availability || {}) };
+    const unavailable = { ...(activeCampaign.unavailable || {}) };
+    delete availability[dateKey];
+    delete unavailable[dateKey];
+    await saveCampaign({
+      ...activeCampaign,
+      availability,
+      unavailable,
+      manuallySelectedDates: (activeCampaign.manuallySelectedDates || []).filter((key) => key !== dateKey),
+      generatedSessionDates: (activeCampaign.generatedSessionDates || []).filter((key) => key !== dateKey),
+      chosenDate: activeCampaign.chosenDate === dateKey ? "" : activeCampaign.chosenDate,
+    });
+  };
+  const setChosen = async (dateKey) => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    await saveCampaign({ ...activeCampaign, chosenDate: dateKey });
+  };
   return (
     <Screen>
-      <Header title="Calendar" subtitle={isDungeonMaster ? "DM proposes dates; players vote availability" : "Choose your availability"} onSettings={openSettings} />
+      <Header title="Calendar" subtitle={activeCampaign ? activeCampaign.name : "No linked campaign"} onSettings={openSettings} />
       <Card>
         <View style={styles.sectionHeader}>
-          <Text style={styles.calendarTitle}>May 2025</Text>
+          <Text style={styles.calendarTitle}>{activeCampaign?.name || "Campaign Calendar"}</Text>
           {isDungeonMaster ? (
-            <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("proposeDate")}>
+            <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("proposeDate") }>
               <Text style={styles.smallRedButtonText}>+ Propose Date</Text>
             </TouchableOpacity>
           ) : null}
         </View>
-        <MiniCalendar />
+        <MiniCalendar proposedDates={proposedDates} />
       </Card>
 
       <Card>
-        <Text style={styles.sectionTitle}>{isDungeonMaster ? "DM Proposed Session Dates" : "Your Availability"}</Text>
-        <Text style={styles.helperText}>
-          {isDungeonMaster
-            ? "Only the DM can add or remove proposed session dates. Players can mark each proposed date as available or unavailable."
-            : "Players can only respond to dates proposed by the DM."}
-        </Text>
-        {proposedDates.map((d) => (
-          <AvailabilityDateRow key={d.key} date={d} navigate={navigate} />
-        ))}
+        <Text style={styles.sectionTitle}>{isDungeonMaster ? "Proposed Session Dates" : "Your Availability"}</Text>
+        <Text style={styles.helperText}>{activeCampaign ? "Synced with Firebase and the main web app." : "Join or create a campaign on the main app first."}</Text>
+        {proposedDates.length ? proposedDates.map((d) => (
+          <AvailabilityDateRow key={d.key} date={d} navigate={navigate} isDungeonMaster={isDungeonMaster} onAvailable={() => toggleAvailability(d.key, "available")} onUnavailable={() => toggleAvailability(d.key, "unavailable")} onRemove={() => removeDate(d.key)} onSetChosen={() => setChosen(d.key)} />
+        )) : <Text style={styles.helperText}>No dates have been proposed yet.</Text>}
       </Card>
     </Screen>
   );
 }
-
-function AvailabilityDateRow({ date, navigate }) {
+function AvailabilityDateRow({ date, navigate, isDungeonMaster, onAvailable, onUnavailable, onRemove, onSetChosen }) {
   return (
     <TouchableOpacity style={styles.availabilityRow} onPress={() => navigate("results")} activeOpacity={0.86}>
       <DateBadge month={date.month} day={date.day} weekday={date.weekday} />
       <View style={styles.eventInfo}>
-        <Text style={styles.sessionTitle}>{date.label}, 2025</Text>
+        <Text style={styles.sessionTitle}>{date.full || `${date.label}`}</Text>
         <Text style={styles.sessionText}>{date.available} available · {date.unavailable} unavailable</Text>
         <View style={styles.responseButtons}>
           {isDungeonMaster ? (
             <>
-              <TouchableOpacity style={[styles.voteButton, date.status === "selected" ? styles.voteSelected : null]} onPress={() => navigate("session")}>
+              <TouchableOpacity style={[styles.voteButton, date.status === "selected" ? styles.voteSelected : null]} onPress={onSetChosen}>
                 <Text style={styles.voteButtonText}>{date.status === "selected" ? "Chosen Date" : "Set as Chosen"}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.voteButtonMuted} onPress={() => navigate("proposeDate")}>
-                <Text style={styles.voteMutedText}>Remove</Text>
+              <TouchableOpacity style={styles.voteButtonMuted} onPress={onRemove}>
+                <Text style={styles.voteMutedText}>Delete Date</Text>
               </TouchableOpacity>
             </>
           ) : (
             <>
-              <TouchableOpacity style={styles.voteAvailable}><Text style={styles.voteButtonText}>Available</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.voteUnavailable}><Text style={styles.voteButtonText}>Unavailable</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.voteAvailable} onPress={onAvailable}><Text style={styles.voteButtonText}>Available</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.voteUnavailable} onPress={onUnavailable}><Text style={styles.voteButtonText}>Unavailable</Text></TouchableOpacity>
             </>
           )}
         </View>
@@ -348,147 +529,158 @@ function AvailabilityDateRow({ date, navigate }) {
     </TouchableOpacity>
   );
 }
-
-function Campaigns({ navigate, openSettings }) {
+function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster }) {
+  const deleteCampaign = (campaign) => {
+    if (!campaign) return;
+    Alert.alert("Delete Campaign", `Delete ${campaign.name}? This also removes it from Firebase.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => deleteCampaignById(campaign.id) },
+    ]);
+  };
   return (
     <Screen>
-      <Header title="Campaigns" subtitle="Manage your adventures" onSettings={openSettings} />
+      <Header title="Campaigns" subtitle="Only campaigns you created or joined" onSettings={openSettings} />
       <View style={styles.searchRow}>
-        <Text style={styles.searchText}>⌕  Search campaigns...</Text>
-        <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("campaignEditor")}>
-          <Text style={styles.smallRedButtonText}>+ Add Campaign</Text>
-        </TouchableOpacity>
+        <Text style={styles.searchText}>Firebase-linked campaigns</Text>
+        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("campaignEditor")}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
       </View>
-      {campaigns.map((c) => (
-        <TouchableOpacity key={c.id} activeOpacity={0.86} onPress={() => navigate("campaignDetail")}>
-          <Card style={styles.campaignCard}>
-            <View style={[styles.campaignArt, { backgroundColor: c.color }]} />
-            <View style={styles.campaignInfo}>
-              <Text style={styles.campaignTitle}>{c.name}</Text>
-              <Text style={styles.sessionText}>{c.level}</Text>
-              <Text style={styles.sessionText}>Next Session: {c.next}</Text>
-              <Text style={styles.sessionText}>DM: {c.dm}</Text>
-            </View>
-            <View style={styles.badge}><Text style={styles.badgeText}>{c.status}</Text></View>
-            <Text style={styles.chevron}>›</Text>
-          </Card>
-        </TouchableOpacity>
-      ))}
+      {campaigns.length ? campaigns.map((c) => {
+        const dm = c.ownerId || c.dungeonMasterIds?.[0] || "DM";
+        const next = c.chosenDate ? dateKeyToParts(c.chosenDate).full : (proposedDatesForCampaign(c)[0]?.full || "No date selected");
+        return (
+          <TouchableOpacity key={c.id} activeOpacity={0.86} onPress={() => { setSelectedCampaignId(c.id); navigate("campaignDetail"); }}>
+            <Card style={styles.campaignCard}>
+              <View style={[styles.campaignArt, { backgroundColor: c.color || "#3b0764" }]} />
+              <View style={styles.campaignInfo}>
+                <Text style={styles.campaignTitle}>{c.name}</Text>
+                <Text style={styles.sessionText}>{c.level || "Campaign"}</Text>
+                <Text style={styles.sessionText}>Next Session: {next}</Text>
+                <Text style={styles.sessionText}>DM: {dm}</Text>
+              </View>
+              <View style={styles.badge}><Text style={styles.badgeText}>{activeCampaign?.id === c.id ? "Active" : "Linked"}</Text></View>
+              {isDungeonMaster ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deleteCampaign(c)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
+            </Card>
+          </TouchableOpacity>
+        );
+      }) : <Card><Text style={styles.helperText}>No campaigns found for this Firebase account. Create one on the main app or accept an invite.</Text></Card>}
     </Screen>
   );
 }
-
-function CampaignDetail({ navigate, openSettings }) {
+function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster }) {
+  if (!activeCampaign) return <SimpleInfoPage title="Campaign Details" openSettings={openSettings}><Text style={styles.notesText}>No campaign is selected.</Text></SimpleInfoPage>;
+  const deleteCurrent = () => Alert.alert("Delete Campaign", `Delete ${activeCampaign.name}?`, [
+    { text: "Cancel", style: "cancel" },
+    { text: "Delete", style: "destructive", onPress: async () => { await deleteCampaignById(activeCampaign.id); navigate("campaigns"); } },
+  ]);
   return (
     <Screen>
-      <Header title="Campaign Details" subtitle="Curse of Strahd" onSettings={openSettings} />
+      <Header title="Campaign Details" subtitle={activeCampaign.name} onSettings={openSettings} />
       <Card>
         <View style={styles.detailsHero} />
-        <SettingsRow label="Campaign Name" detail="Curse of Strahd" onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Campaign Level" detail="Level 7" onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Dungeon Master" detail="DM (You)" onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Campaign Image" detail="Edit image" onPress={() => navigate("campaignEditor")} />
-        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("campaigns")}>
-          <Text style={styles.primaryButtonText}>Save Changes</Text>
-        </TouchableOpacity>
+        <SettingsRow label="Campaign Name" detail={activeCampaign.name} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Campaign Level" detail={activeCampaign.level || "Not set"} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Dungeon Masters" detail={(activeCampaign.dungeonMasterIds || []).length ? `${activeCampaign.dungeonMasterIds.length} DM(s)` : "Not set"} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign).length} linked`} onPress={() => navigate("players")} />
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
+        {isDungeonMaster ? <TouchableOpacity style={styles.deleteAccountButton} onPress={deleteCurrent}><Text style={styles.deleteAccountText}>Delete Campaign</Text></TouchableOpacity> : null}
       </Card>
     </Screen>
   );
 }
-
-function Players({ navigate, openSettings }) {
+function Players({ navigate, openSettings, activePlayers = [], activeCampaign, isDungeonMaster }) {
+  const deletePlayer = async (player) => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    const email = normalizeEmail(player.email || "");
+    await saveCampaign({
+      ...activeCampaign,
+      memberIds: (activeCampaign.memberIds || []).filter((id) => id !== player.id),
+      invitedEmails: (activeCampaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email),
+      invitedPlayers: (activeCampaign.invitedPlayers || []).filter((item) => (item.id || item.uid) !== player.id && normalizeEmail(item.email) !== email),
+    });
+  };
   return (
     <Screen>
-      <Header title="Players" subtitle="Manage players and availability" onSettings={openSettings} />
+      <Header title="Players" subtitle={activeCampaign ? activeCampaign.name : "No selected campaign"} onSettings={openSettings} />
       <StatGrid>
-        <StatCard icon="♟" label="Total" value="5" color={COLORS.green} />
-        <StatCard icon="▣" label="Available" value="4" color={COLORS.blue} />
-        <StatCard icon="◷" label="Unavailable" value="1" color={COLORS.red} />
-        <StatCard icon="◇" label="Pending" value="0" color={COLORS.gold} />
+        <StatCard icon="♟" label="Total" value={String(activePlayers.length)} color={COLORS.green} />
+        <StatCard icon="▣" label="Available" value="—" color={COLORS.blue} />
+        <StatCard icon="◷" label="Unavailable" value="—" color={COLORS.red} />
+        <StatCard icon="◇" label="Pending" value={String(activePlayers.filter((p) => p.invitePending).length)} color={COLORS.gold} />
       </StatGrid>
-      <Text style={styles.searchText}>⌕  Search players...</Text>
+      <Text style={styles.searchText}>Actual campaign users/invites from Firebase</Text>
       <Card>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Player List</Text>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}>
-            <Text style={styles.outlineButtonText}>+ Add Player</Text>
-          </TouchableOpacity>
+          {isDungeonMaster ? <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}><Text style={styles.outlineButtonText}>+ Add Player</Text></TouchableOpacity> : null}
         </View>
-        {players.map((p) => (
-          <TouchableOpacity key={p.name} style={styles.playerRow} onPress={() => navigate("playerEditor")}>
-            <View style={styles.avatar}><Text style={styles.avatarText}>{p.name[0]}</Text></View>
+        {activePlayers.length ? activePlayers.map((p) => (
+          <View key={`${p.id}-${p.email}`} style={styles.playerRow}>
+            <View style={styles.avatar}><Text style={styles.avatarText}>{String(p.name || p.email || "P")[0]}</Text></View>
             <View style={styles.playerInfo}>
-              <Text style={styles.campaignTitle}>{p.name}</Text>
-              <Text style={styles.sessionText}>{p.role}</Text>
-              <Text style={[styles.sessionAccent, { color: p.color }]}>{p.status}</Text>
+              <Text style={styles.campaignTitle}>{p.name || p.email}</Text>
+              <Text style={styles.sessionText}>{p.email || p.role}</Text>
+              <Text style={[styles.sessionAccent, { color: p.invitePending ? COLORS.gold : COLORS.green }]}>{p.invitePending ? "Invited" : (p.role || "Player")}</Text>
             </View>
-            <Text style={styles.moreDots}>•••</Text>
-          </TouchableOpacity>
-        ))}
+            {isDungeonMaster ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deletePlayer(p)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
+          </View>
+        )) : <Text style={styles.helperText}>No players are linked to this campaign yet.</Text>}
       </Card>
       <Card style={styles.quickAvailability}>
         <View>
           <Text style={styles.sectionTitle}>Quick Availability</Text>
           <Text style={styles.sessionText}>Update your proposed-date responses</Text>
         </View>
-        <TouchableOpacity style={styles.primaryButtonSmall} onPress={() => navigate("availability")}>
-          <Text style={styles.primaryButtonText}>Update</Text>
-        </TouchableOpacity>
+        <TouchableOpacity style={styles.primaryButtonSmall} onPress={() => navigate("availability")}><Text style={styles.primaryButtonText}>Update</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
 }
-
-function Results({ navigate, openSettings }) {
+function Results({ navigate, openSettings, activeCampaign, proposedDates = [] }) {
+  const best = [...proposedDates].sort((a, b) => (b.available - b.unavailable) - (a.available - a.unavailable))[0];
   return (
     <Screen>
-      <Header title="Results" subtitle="Compare proposed session dates" onSettings={openSettings} />
+      <Header title="Results" subtitle={activeCampaign ? activeCampaign.name : "Compare proposed session dates"} onSettings={openSettings} />
       <Card>
         <Text style={styles.sectionTitle}>Availability Results</Text>
-        {proposedDates.map((d) => (
+        {proposedDates.length ? proposedDates.map((d) => (
           <View key={d.key} style={styles.resultRow}>
             <Icon>▥</Icon>
             <View style={styles.resultInfo}>
-              <Text style={styles.resultName}>{d.label}, 2025</Text>
+              <Text style={styles.resultName}>{d.full || d.label}</Text>
               <Text style={styles.resultMeta}>{d.available} available · {d.unavailable} unavailable</Text>
             </View>
-            <View style={styles.resultTotal}><Text style={styles.resultTotalText}>{d.status === "selected" ? "Best" : "View"}</Text></View>
+            <View style={styles.resultTotal}><Text style={styles.resultTotalText}>{d.status === "selected" ? "Chosen" : "View"}</Text></View>
           </View>
-        ))}
+        )) : <Text style={styles.helperText}>No availability results yet.</Text>}
       </Card>
       <Card>
         <Text style={styles.sectionTitle}>Auto Pick Best Date</Text>
-        <Text style={styles.helperText}>The best date is chosen from DM-proposed dates using player availability responses.</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("session")}>
-          <Text style={styles.primaryButtonText}>Pick May 24</Text>
-        </TouchableOpacity>
+        <Text style={styles.helperText}>The best date is chosen from proposed dates using player availability responses.</Text>
+        {best ? <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("session")}><Text style={styles.primaryButtonText}>Best: {best.full || best.label}</Text></TouchableOpacity> : null}
       </Card>
     </Screen>
   );
 }
-
-function SessionDetails({ navigate, openSettings }) {
+function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates = [], activePlayers = [] }) {
+  const chosen = activeCampaign?.chosenDate ? proposedDates.find((d) => d.key === activeCampaign.chosenDate) : proposedDates[0];
   return (
     <Screen>
-      <Header title="Session Details" subtitle="Storm King’s Thunder" onSettings={openSettings} />
+      <Header title="Session Details" subtitle={activeCampaign?.name || "No selected campaign"} onSettings={openSettings} />
       <Card>
         <View style={styles.detailsHero} />
-        <Text style={styles.detailsTitle}>Storm King’s Thunder</Text>
+        <Text style={styles.detailsTitle}>{activeCampaign?.name || "Campaign Session"}</Text>
         <Text style={styles.sessionText}>Chosen from DM-proposed availability dates</Text>
-        <InfoLine icon="▣" text="Saturday, May 24, 2025" />
-        <InfoLine icon="◷" text="6:00 PM – 10:00 PM" />
-        <InfoLine icon="♟" text="5 available · 1 unavailable" />
-        <InfoLine icon="⌖" text="Tom’s House" />
+        <InfoLine icon="▣" text={chosen?.full || "No date selected"} />
+        <InfoLine icon="◷" text={`${activeCampaign?.sessionTime || "18:00"} · ${activeCampaign?.sessionDuration || 4} hours`} />
+        <InfoLine icon="♟" text={`${chosen?.available || 0} available · ${chosen?.unavailable || 0} unavailable · ${activePlayers.length} players`} />
+        <InfoLine icon="⌖" text={activeCampaign?.defaultLocation || "Location not set"} />
         <Text style={styles.listHeading}>Notes</Text>
-        <Text style={styles.notesText}>This date was selected from the proposed session dates after players marked availability.</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}>
-          <Text style={styles.primaryButtonText}>I’m Going</Text>
-        </TouchableOpacity>
+        <Text style={styles.notesText}>This session information is synced from the same Firebase campaign used by the main web app.</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
 }
-
 function InfoLine({ icon, text }) {
   return <View style={styles.infoLine}><Icon color={COLORS.gold}>{icon}</Icon><Text style={styles.infoText}>{text}</Text></View>;
 }
@@ -532,20 +724,20 @@ function ProfileScreen({ navigate, openSettings, user }) {
   );
 }
 
-function CampaignSettings({ navigate, openSettings }) {
+function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMaster }) {
   return (
     <Screen>
-      <Header title="Campaign Settings" subtitle="Default settings" onSettings={openSettings} />
+      <Header title="Campaign Settings" subtitle={activeCampaign?.name || "No campaign selected"} onSettings={openSettings} />
       <Card>
-        <SettingsRow label="Default Campaign" detail="Curse of Strahd" onPress={() => navigate("campaignSettings")} />
-        <SettingsRow label="Default Session Duration" detail="4 hours" onPress={() => navigate("campaignSettings")} />
-        <SettingsRow label="Default Location" detail="Tom’s House" onPress={() => navigate("campaignSettings")} />
-        <SettingsRow label="Automatically Suggest Dates" detail="On" onPress={() => navigate("campaignSettings")} />
+        <SettingsRow label="Campaign" detail={activeCampaign?.name || "None"} onPress={() => navigate("campaigns")} />
+        <SettingsRow label="Default Session Duration" detail={`${activeCampaign?.sessionDuration || 4} hours`} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Default Location" detail={activeCampaign?.defaultLocation || "Not set"} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Proposed Dates" detail={`${proposedDatesForCampaign(activeCampaign).length} date(s)`} onPress={() => navigate("calendar")} />
+        <SettingsRow label="Campaign Role" detail={isDungeonMaster ? "Dungeon Master" : "Player"} onPress={() => navigate("campaignDetail")} />
       </Card>
     </Screen>
   );
 }
-
 function Notifications({ navigate, openSettings }) {
   return (
     <Screen>
@@ -563,15 +755,14 @@ function Notifications({ navigate, openSettings }) {
 function PlanSettings({ openSettings }) {
   return (
     <Screen>
-      <Header title="Plan Settings" subtitle="Free, Adventurer, and Guildmaster plans" onSettings={openSettings} />
+      <Header title="Plan Settings" subtitle="Synced with the main web app" onSettings={openSettings} />
       <Card>
         <Text style={styles.sectionTitle}>Current Plan</Text>
-        <Text style={styles.planTitle}>Guildmaster Plan</Text>
-        <Text style={styles.helperText}>Mobile uses the same Firebase account and subscription status as the main web app.</Text>
+        <Text style={styles.planTitle}>Managed on Web</Text>
+        <Text style={styles.helperText}>Subscription status and billing are tied to your Firebase account and Stripe customer record from the main app.</Text>
       </Card>
-
       {planCards.map((plan) => (
-        <Card key={plan.id} style={plan.active ? styles.activePlanCard : null}>
+        <Card key={plan.id}>
           <View style={styles.sectionHeader}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={styles.campaignTitle}>{plan.name}</Text>
@@ -579,25 +770,13 @@ function PlanSettings({ openSettings }) {
             </View>
             <Text style={styles.planPrice}>{plan.price}</Text>
           </View>
-
-          {plan.features.map((feature) => (
-            <View key={feature} style={styles.planFeatureRow}>
-              <Text style={styles.planCheck}>✓</Text>
-              <Text style={styles.planFeatureText}>{feature}</Text>
-            </View>
-          ))}
-
-          <TouchableOpacity style={plan.active ? styles.activePlanButton : styles.outlineWideButton} onPress={() => {}}>
-            <Text style={plan.active ? styles.activePlanText : styles.outlineButtonText}>
-              {plan.active ? "Current Plan" : `Choose ${plan.name}`}
-            </Text>
-          </TouchableOpacity>
+          {plan.features.map((feature) => <View key={feature} style={styles.planFeatureRow}><Text style={styles.planCheck}>✓</Text><Text style={styles.planFeatureText}>{feature}</Text></View>)}
+          <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL("https://dungeoncalendar.com") }><Text style={styles.outlineButtonText}>Manage on Web</Text></TouchableOpacity>
         </Card>
       ))}
     </Screen>
   );
 }
-
 function SimpleInfoPage({ title, children, openSettings }) {
   return (
     <Screen>
@@ -606,6 +785,32 @@ function SimpleInfoPage({ title, children, openSettings }) {
         {children}
       </Card>
     </Screen>
+  );
+}
+
+function PrivacyPolicyMobile({ openSettings }) {
+  return (
+    <SimpleInfoPage title="Privacy Policy" openSettings={openSettings}>
+      <Text style={styles.sectionTitle}>Privacy Policy</Text>
+      <Text style={styles.helperText}>Last Updated: June 2026</Text>
+      <Text style={styles.notesText}>Dungeon Calendar collects account, campaign, scheduling, and subscription information necessary to provide the service.</Text>
+      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Subscription processing is handled by Stripe.</Text>
+      <Text style={styles.notesText}>We do not sell personal information.</Text>
+      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+    </SimpleInfoPage>
+  );
+}
+
+function TermsOfServiceMobile({ openSettings }) {
+  return (
+    <SimpleInfoPage title="Terms of Service" openSettings={openSettings}>
+      <Text style={styles.sectionTitle}>Terms of Service</Text>
+      <Text style={styles.helperText}>Last Updated: June 2026</Text>
+      <Text style={styles.notesText}>By using Dungeon Calendar, you agree to use the service lawfully and responsibly.</Text>
+      <Text style={styles.notesText}>Subscriptions are managed through Stripe and may be modified or cancelled according to the applicable subscription terms.</Text>
+      <Text style={styles.notesText}>Users are responsible for campaign content they create and share.</Text>
+      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+    </SimpleInfoPage>
   );
 }
 
@@ -710,90 +915,121 @@ function AboutPage({ openSettings }) {
 }
 
 
-function EditableField({ label, value, editable = true }) {
+function EditableField({ label, value, editable = true, onChangeText }) {
   const [text, setText] = useState(value || "");
   useEffect(() => setText(value || ""), [value]);
+  const handleChange = (next) => { setText(next); if (onChangeText) onChangeText(next); };
   return (
     <View style={styles.editableField}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput value={text} onChangeText={setText} editable={editable} selectTextOnFocus={editable} style={[styles.fieldInput, !editable && styles.fieldInputDisabled]} placeholderTextColor="#6b7280" />
+      <TextInput value={text} onChangeText={handleChange} editable={editable} selectTextOnFocus={editable} style={[styles.fieldInput, !editable && styles.fieldInputDisabled]} placeholderTextColor="#6b7280" />
     </View>
   );
 }
 
-function ProposeDateScreen({ openSettings }) {
+function ProposeDateScreen({ openSettings, activeCampaign, isDungeonMaster, navigate }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [dateText, setDateText] = useState(today);
+  const addDate = async () => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    const key = String(dateText || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+      Alert.alert("Date format", "Use YYYY-MM-DD, for example 2026-07-04.");
+      return;
+    }
+    await saveCampaign({ ...activeCampaign, manuallySelectedDates: Array.from(new Set([...(activeCampaign.manuallySelectedDates || []), key])) });
+    navigate("calendar");
+  };
   return (
     <Screen>
-      <Header title="Propose Dates" subtitle="DM date selection" onSettings={openSettings} />
+      <Header title="Propose Dates" subtitle={activeCampaign?.name || "DM date selection"} onSettings={openSettings} />
       <Card>
-        <Text style={styles.sectionTitle}>Selected Dates</Text>
-        <Text style={styles.helperText}>Choose the dates your players can vote on.</Text>
-        <EditableField label="Date 1" value="May 24, 2025" />
-        <EditableField label="Date 2" value="May 31, 2025" />
-        <EditableField label="Date 3" value="Jun 7, 2025" />
-        <TouchableOpacity style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>Save Proposed Dates</Text>
-        </TouchableOpacity>
+        <Text style={styles.sectionTitle}>Add Proposed Date</Text>
+        <Text style={styles.helperText}>Dates save to the same Firebase campaign document used by the web app.</Text>
+        <EditableField label="Date (YYYY-MM-DD)" value={dateText} onChangeText={setDateText} />
+        <TouchableOpacity style={styles.primaryButton} onPress={addDate}><Text style={styles.primaryButtonText}>Save Proposed Date</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
 }
-
-function CampaignEditor({ openSettings }) {
+function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
+  const [name, setName] = useState(activeCampaign?.name || "");
+  const [level, setLevel] = useState(activeCampaign?.level || "");
+  const [location, setLocation] = useState(activeCampaign?.defaultLocation || "");
+  const [duration, setDuration] = useState(String(activeCampaign?.sessionDuration || 4));
+  const save = async () => {
+    const campaign = activeCampaign || normalizeCampaign({ ownerId: user?.uid, dungeonMasterIds: [user?.uid].filter(Boolean), memberIds: [user?.uid].filter(Boolean) });
+    await saveCampaign({ ...campaign, name: name || "Untitled Campaign", level, defaultLocation: location, sessionDuration: Number(duration || 4) });
+    navigate("campaigns");
+  };
   return (
     <Screen>
-      <Header title="Edit Campaign" subtitle="Curse of Strahd" onSettings={openSettings} />
+      <Header title={activeCampaign ? "Edit Campaign" : "Add Campaign"} subtitle={activeCampaign?.name || "New Firebase campaign"} onSettings={openSettings} />
       <Card>
-        <EditableField label="Campaign Name" value="Curse of Strahd" />
-        <EditableField label="Campaign Level" value="7" />
-        <EditableField label="Default Location" value="Tom’s House" />
-        <EditableField label="Default Duration" value="4 hours" />
-        <TouchableOpacity style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>Save Campaign</Text>
-        </TouchableOpacity>
+        <EditableField label="Campaign Name" value={name} onChangeText={setName} />
+        <EditableField label="Campaign Level" value={level} onChangeText={setLevel} />
+        <EditableField label="Default Location" value={location} onChangeText={setLocation} />
+        <EditableField label="Default Duration" value={duration} onChangeText={setDuration} />
+        <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Campaign</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
 }
-
-function PlayerEditor({ openSettings }) {
+function PlayerEditor({ openSettings, activeCampaign, navigate }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("Player");
+  const save = async () => {
+    if (!activeCampaign) return;
+    const nextPlayer = campaignPlayerRecord({ name, email, role, invitePending: true }, activeCampaign.id);
+    await saveCampaign({
+      ...activeCampaign,
+      invitedPlayers: [...(activeCampaign.invitedPlayers || []), nextPlayer],
+      invitedEmails: Array.from(new Set([...(activeCampaign.invitedEmails || []), normalizeEmail(email)].filter(Boolean))),
+    });
+    navigate("players");
+  };
   return (
     <Screen>
-      <Header title="Player Editor" subtitle="Edit player details" onSettings={openSettings} />
+      <Header title="Player Editor" subtitle="Add campaign invite/player" onSettings={openSettings} />
       <Card>
-        <EditableField label="Player Name" value="Jessica" />
-        <EditableField label="Character / Role" value="Level 7 Rogue" />
-        <EditableField label="Availability" value="Available" />
-        <TouchableOpacity style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>Save Player</Text>
-        </TouchableOpacity>
+        <EditableField label="Player Name" value={name} onChangeText={setName} />
+        <EditableField label="Email" value={email} onChangeText={setEmail} />
+        <EditableField label="Role" value={role} onChangeText={setRole} />
+        <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Player</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
 }
-
-function AvailabilityScreen({ openSettings }) {
+function AvailabilityScreen({ openSettings, user, activeCampaign, proposedDates = [] }) {
+  const toggle = async (dateKey, status) => {
+    if (!activeCampaign || !user?.uid) return;
+    const available = new Set(activeCampaign.availability?.[dateKey] || []);
+    const unavailable = new Set(activeCampaign.unavailable?.[dateKey] || []);
+    if (status === "available") { available.add(user.uid); unavailable.delete(user.uid); }
+    if (status === "unavailable") { unavailable.add(user.uid); available.delete(user.uid); }
+    await saveCampaign({ ...activeCampaign, availability: { ...(activeCampaign.availability || {}), [dateKey]: Array.from(available) }, unavailable: { ...(activeCampaign.unavailable || {}), [dateKey]: Array.from(unavailable) } });
+  };
   return (
     <Screen>
-      <Header title="My Availability" subtitle="Respond to proposed dates" onSettings={openSettings} />
+      <Header title="My Availability" subtitle={activeCampaign?.name || "Respond to proposed dates"} onSettings={openSettings} />
       <Card>
-        {proposedDates.map((date) => (
+        {proposedDates.length ? proposedDates.map((date) => (
           <View key={date.key} style={styles.availabilityRow}>
             <DateBadge month={date.month} day={date.day} weekday={date.weekday} />
             <View style={styles.eventInfo}>
-              <Text style={styles.sessionTitle}>{date.label}, 2025</Text>
+              <Text style={styles.sessionTitle}>{date.full || date.label}</Text>
               <View style={styles.responseButtons}>
-                <TouchableOpacity style={styles.voteAvailable}><Text style={styles.voteButtonText}>Available</Text></TouchableOpacity>
-                <TouchableOpacity style={styles.voteUnavailable}><Text style={styles.voteButtonText}>Unavailable</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.voteAvailable} onPress={() => toggle(date.key, "available")}><Text style={styles.voteButtonText}>Available</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.voteUnavailable} onPress={() => toggle(date.key, "unavailable")}><Text style={styles.voteButtonText}>Unavailable</Text></TouchableOpacity>
               </View>
             </View>
           </View>
-        ))}
+        )) : <Text style={styles.helperText}>No dates have been proposed yet.</Text>}
       </Card>
     </Screen>
   );
 }
-
 function ProfileEditScreen({ openSettings, user }) {
   const profile = getFirebaseUserProfile(user);
   return (
@@ -829,7 +1065,7 @@ function SettingsRow({ label, detail, onPress }) {
   );
 }
 
-function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLogout }) {
+function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLogout, proposedDates = [] }) {
   const settings = [
     ["User Settings", "settings"],
     ["Campaign Settings", "campaignSettings"],
@@ -943,6 +1179,16 @@ function DeleteAccountModal({ visible, onClose, onDeleteAccount }) {
   );
 }
 
+function SyncBanner({ syncStatus, onReconnect }) {
+  if (!syncStatus || syncStatus === "live" || syncStatus === "signed-out") return null;
+  const label = syncStatus === "cache" ? "Offline/cache mode - reconnecting to Firebase..." : syncStatus === "error" ? "Firebase sync error. Tap to reconnect." : "Connecting to Firebase live sync...";
+  return (
+    <TouchableOpacity style={styles.syncBanner} onPress={onReconnect} activeOpacity={0.85}>
+      <Text style={styles.syncBannerText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 function BottomNav({ route, navigate, openSettings }) {
   const items = [
     ["dashboard", "⌂", "Dashboard"],
@@ -974,6 +1220,9 @@ export default function DungeonCalendarMobileApp() {
   const [authError, setAuthError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [campaigns, setCampaigns] = useState([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [syncStatus, setSyncStatus] = useState("connecting");
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
@@ -982,12 +1231,54 @@ export default function DungeonCalendarMobileApp() {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (!user) {
+      setCampaigns([]);
+      setSelectedCampaignId("");
+      setSyncStatus("signed-out");
+      return undefined;
+    }
+    let unsubscribeSync = () => {};
+    setSyncStatus("connecting");
+    enableNetwork(db).catch((error) => {
+      console.warn("Could not force Firestore network on:", error);
+    });
+    unsubscribeSync = snapshotsInSync(db, () => {
+      setSyncStatus("live");
+    });
+    const unsubscribe = onSnapshot(collection(db, "campaigns"), { includeMetadataChanges: true }, (snapshot) => {
+      setSyncStatus(snapshot.metadata.fromCache ? "cache" : "live");
+      const visibleCampaigns = snapshot.docs
+        .map((item) => normalizeCampaign({ id: item.id, ...item.data() }))
+        .filter((campaign) => visibleToUser(campaign, user))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      setCampaigns(visibleCampaigns);
+      setSelectedCampaignId((current) => current && visibleCampaigns.some((c) => c.id === current) ? current : (visibleCampaigns[0]?.id || ""));
+    }, (error) => {
+      console.warn("Mobile campaign sync failed:", error);
+      setSyncStatus("error");
+      setAuthError(error?.message || "Could not load campaigns from Firebase.");
+    });
+    return () => {
+      unsubscribe();
+      unsubscribeSync();
+    };
+  }, [user]);
+
   const navigate = (next) => {
     if (next === "more") {
       setSettingsOpen(true);
       return;
     }
     setRoute(next);
+  };
+
+  const refreshFirebaseNetwork = async () => {
+    setSyncStatus("connecting");
+    await enableNetwork(db).catch((error) => {
+      setSyncStatus("error");
+      setAuthError(error?.message || "Could not reconnect to Firebase.");
+    });
   };
 
   const handleGoogleLogin = async () => {
@@ -1033,12 +1324,26 @@ export default function DungeonCalendarMobileApp() {
     ]);
   };
 
+  const activeCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) || campaigns[0] || null;
+  const activePlayers = campaignPlayers(activeCampaign, user);
+  const proposedDates = proposedDatesForCampaign(activeCampaign);
+  const isDungeonMaster = userIsDungeonMaster(user, activeCampaign);
+
   const props = {
     navigate,
     user,
+    campaigns,
+    activeCampaign,
+    activePlayers,
+    proposedDates,
+    isDungeonMaster,
+    selectedCampaignId,
+    setSelectedCampaignId,
     openSettings: () => setSettingsOpen(true),
     openDeleteAccount: () => setDeleteAccountOpen(true),
     handleLogout,
+    syncStatus,
+    refreshFirebaseNetwork,
   };
 
   const screen = useMemo(() => {
@@ -1072,9 +1377,9 @@ export default function DungeonCalendarMobileApp() {
       case "notifications":
         return <Notifications {...props} />;
       case "privacy":
-        return <SimpleInfoPage title="Privacy Policy" openSettings={props.openSettings}><Text style={styles.notesText}>Privacy Policy content opens here and should match the main app.</Text></SimpleInfoPage>;
+        return <PrivacyPolicyMobile openSettings={props.openSettings} />;
       case "terms":
-        return <SimpleInfoPage title="Terms of Service" openSettings={props.openSettings}><Text style={styles.notesText}>Terms of Service content opens here and should match the main app.</Text></SimpleInfoPage>;
+        return <TermsOfServiceMobile openSettings={props.openSettings} />;
       case "about":
         return <AboutPage {...props} />;
       case "plan":
@@ -1084,7 +1389,7 @@ export default function DungeonCalendarMobileApp() {
       default:
         return <Dashboard {...props} />;
     }
-  }, [route, user]);
+  }, [route, user, campaigns, selectedCampaignId]);
 
   if (!user) {
     return <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />;
@@ -1094,6 +1399,7 @@ export default function DungeonCalendarMobileApp() {
     <View style={styles.app}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
       {screen}
+      <SyncBanner syncStatus={syncStatus} onReconnect={refreshFirebaseNetwork} />
       <BottomNav route={route} navigate={navigate} openSettings={() => setSettingsOpen(true)} />
       <SettingsModal
         visible={settingsOpen}
@@ -1101,6 +1407,7 @@ export default function DungeonCalendarMobileApp() {
         navigate={navigate}
         openDeleteAccount={() => setDeleteAccountOpen(true)}
         handleLogout={handleLogout}
+        proposedDates={proposedDates}
       />
       <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOut().catch(() => {}); await GoogleSignin.signOut().catch(() => {}); setUser(null); }} />
     </View>
@@ -1319,6 +1626,8 @@ const styles = StyleSheet.create({
   fieldLabel: { color: COLORS.gold, fontSize: 13, fontWeight: "900", marginBottom: 7 },
   fieldInput: { minHeight: 48, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.panel2, color: COLORS.white, paddingHorizontal: 12 },
   errorText: { color: "#fca5a5", fontSize: 13, textAlign: "center", marginTop: 14, lineHeight: 18 },
+  syncBanner: { position: "absolute", left: 12, right: 12, bottom: 88, zIndex: 30, backgroundColor: "#3b1f06", borderWidth: 1, borderColor: COLORS.amber, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 12 },
+  syncBannerText: { color: COLORS.gold, fontSize: 12, fontWeight: "800", textAlign: "center" },
   bottomNav: {
     position: "absolute",
     left: 0,
