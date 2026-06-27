@@ -87,14 +87,47 @@ function buildGeneratedSessionDates(finalDateKey, cadence = "weekly", count = 0)
 
 function playerTokenUrlForCampaign(player = {}, campaign = {}) {
   const campaignId = campaign?.id || "";
-  const key = player?.id || player?.uid || normalizeEmail(player?.email || "");
+  const email = normalizeEmail(player?.email || "");
+  const candidateKeys = Array.from(new Set([
+    player?.id,
+    player?.uid,
+    email,
+  ].filter(Boolean)));
+
+  for (const key of candidateKeys) {
+    const fromPlayerCampaignMap = campaignId ? player?.campaignTokenImages?.[campaignId] : "";
+    const fromCampaignPlayerMap = campaign?.playerTokenImages?.[key];
+    if (fromPlayerCampaignMap) return fromPlayerCampaignMap;
+    if (fromCampaignPlayerMap) return fromCampaignPlayerMap;
+  }
+
   return (
-    (campaignId && player?.campaignTokenImages?.[campaignId]) ||
-    (key && campaign?.playerTokenImages?.[key]) ||
     player?.tokenImage ||
     player?.tokenUrl ||
+    player?.avatar ||
+    player?.photoURL ||
     ""
   );
+}
+
+function campaignImageUrl(campaign = {}) {
+  return (
+    campaign?.campaignTokenUrl ||
+    campaign?.campaignImageUrl ||
+    campaign?.imageUrl ||
+    campaign?.coverImageUrl ||
+    campaign?.tokenUrl ||
+    campaign?.tokenImage ||
+    campaign?.image ||
+    ""
+  );
+}
+
+function ImageOrFallback({ uri, imageStyle, fallbackStyle, children, resizeMode = "cover" }) {
+  if (uri) {
+    return <Image key={uri} source={{ uri }} style={imageStyle} resizeMode={resizeMode} />;
+  }
+  return <View style={fallbackStyle}>{children}</View>;
 }
 
 function mergeCampaignTokenIntoPlayer(player = {}, campaign = {}) {
@@ -129,9 +162,12 @@ function normalizeCampaign(campaign = {}) {
     invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
     invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
     playerTokenImages: campaign.playerTokenImages || {},
-    campaignTokenUrl: campaign.campaignTokenUrl || campaign.tokenUrl || campaign.tokenImage || "",
-    tokenUrl: campaign.tokenUrl || campaign.campaignTokenUrl || campaign.tokenImage || "",
-    tokenImage: campaign.tokenImage || campaign.tokenUrl || campaign.campaignTokenUrl || "",
+    campaignTokenUrl: campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
+    campaignImageUrl: campaign.campaignImageUrl || campaign.campaignTokenUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
+    imageUrl: campaign.imageUrl || campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
+    coverImageUrl: campaign.coverImageUrl || campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
+    tokenUrl: campaign.tokenUrl || campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.tokenImage || campaign.image || "",
+    tokenImage: campaign.tokenImage || campaign.tokenUrl || campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.image || "",
     recurringCadence: campaign.recurringCadence || "weekly",
     recurringSessionCount: Number(campaign.recurringSessionCount || 4),
     availability: campaign.availability || {},
@@ -808,7 +844,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
         return (
           <TouchableOpacity key={c.id} activeOpacity={0.86} onPress={() => { setSelectedCampaignId(c.id); navigate("campaignDetail"); }}>
             <Card style={styles.campaignCard}>
-              <View style={[styles.campaignArt, { backgroundColor: c.color || "#3b0764" }]} />
+              <ImageOrFallback uri={campaignImageUrl(c)} imageStyle={styles.campaignArt} fallbackStyle={[styles.campaignArt, { backgroundColor: c.color || "#3b0764" }]} />
               <View style={styles.campaignInfo}>
                 <Text style={styles.campaignTitle}>{c.name}</Text>
                 <Text style={styles.sessionText}>{c.level || "Campaign"}</Text>
@@ -834,7 +870,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
     <Screen>
       <Header title="Campaign Details" subtitle={activeCampaign.name} onSettings={openSettings} />
       <Card>
-        <View style={styles.detailsHero} />
+        <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.detailsHero} fallbackStyle={styles.detailsHero} />
         <SettingsRow label="Campaign Name" detail={activeCampaign.name} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Campaign Level" detail={activeCampaign.level || "Not set"} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Dungeon Masters" detail={(activeCampaign.dungeonMasterIds || []).length ? `${activeCampaign.dungeonMasterIds.length} DM(s)` : "Not set"} onPress={() => navigate("campaignEditor")} />
@@ -871,9 +907,11 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
           <Text style={styles.sectionTitle}>Player List</Text>
           {isDungeonMaster ? <View style={styles.inlineActions}><TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}><Text style={styles.outlineButtonText}>+ Add Player</Text></TouchableOpacity><TouchableOpacity style={styles.outlineButton} onPress={() => hasPlanFeature(plan, "tokenUploads") ? navigate("tokens") : navigate("plan")}><Text style={styles.outlineButtonText}>Tokens</Text></TouchableOpacity></View> : null}
         </View>
-        {activePlayers.length ? activePlayers.map((p) => (
+        {activePlayers.length ? activePlayers.map((p) => {
+          const tokenUri = playerTokenUrlForCampaign(p, activeCampaign);
+          return (
           <View key={`${p.id}-${p.email}`} style={styles.playerRow}>
-            <View style={styles.avatar}><Text style={styles.avatarText}>{String(p.name || p.email || "P")[0]}</Text></View>
+            <ImageOrFallback uri={tokenUri} imageStyle={styles.avatar} fallbackStyle={styles.avatar}><Text style={styles.avatarText}>{String(p.name || p.email || "P")[0]}</Text></ImageOrFallback>
             <View style={styles.playerInfo}>
               <Text style={styles.campaignTitle}>{p.name || p.email}</Text>
               <Text style={styles.sessionText}>{p.email || p.role}</Text>
@@ -881,7 +919,8 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
             </View>
             {isDungeonMaster ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deletePlayer(p)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
           </View>
-        )) : <Text style={styles.helperText}>No players are linked to this campaign yet.</Text>}
+          );
+        }) : <Text style={styles.helperText}>No players are linked to this campaign yet.</Text>}
       </Card>
       <Card style={styles.quickAvailability}>
         <View>
@@ -927,7 +966,7 @@ function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates 
     <Screen>
       <Header title="Session Details" subtitle={activeCampaign?.name || "No selected campaign"} onSettings={openSettings} />
       <Card>
-        <View style={styles.detailsHero} />
+        <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.detailsHero} fallbackStyle={styles.detailsHero} />
         <Text style={styles.detailsTitle}>{activeCampaign?.name || "Campaign Session"}</Text>
         <Text style={styles.sessionText}>Chosen from DM-proposed availability dates</Text>
         <InfoLine icon="▣" text={chosen?.full || "No date selected"} />
@@ -1379,7 +1418,7 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
   );
 }
 function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate }) {
-  const campaignInitial = activeCampaign?.campaignTokenUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || "";
+  const campaignInitial = campaignImageUrl(activeCampaign);
   const [campaignTokenUrl, setCampaignTokenUrl] = useState(campaignInitial);
   const [playerTokenUrls, setPlayerTokenUrls] = useState({});
   const [uploadingKey, setUploadingKey] = useState("");
@@ -1390,8 +1429,8 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       if (key) initial[key] = playerTokenUrlForCampaign(p, activeCampaign);
     });
     setPlayerTokenUrls(initial);
-    setCampaignTokenUrl(activeCampaign?.campaignTokenUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || "");
-  }, [activeCampaign?.id, JSON.stringify(activeCampaign?.playerTokenImages || {}), activePlayers.length]);
+    setCampaignTokenUrl(campaignImageUrl(activeCampaign));
+  }, [activeCampaign?.id, JSON.stringify(activeCampaign?.playerTokenImages || {}), JSON.stringify(activeCampaign?.invitedPlayers || []), JSON.stringify(activePlayers || [])]);
   const uploadTokenImage = async (targetKey, setter) => {
     if (!activeCampaign || !isDungeonMaster) return;
     if (!hasPlanFeature(plan, "tokenUploads")) {
@@ -1434,15 +1473,26 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       return;
     }
     const playerTokenImages = { ...(activeCampaign.playerTokenImages || {}) };
+    activePlayers.forEach((p) => {
+      const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
+      const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
+      keys.forEach((key) => {
+        if (url) playerTokenImages[key] = url;
+        else delete playerTokenImages[key];
+      });
+    });
     const invitedPlayers = (activeCampaign.invitedPlayers || []).map((p) => {
-      const key = p.id || p.uid || normalizeEmail(p.email);
-      const url = playerTokenUrls[key] || "";
-      if (key && url) playerTokenImages[key] = url;
-      if (key && !url) delete playerTokenImages[key];
+      const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
+      const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
+      keys.forEach((key) => {
+        if (url) playerTokenImages[key] = url;
+        else delete playerTokenImages[key];
+      });
       return {
         ...p,
         tokenUrl: url || p.tokenUrl || "",
         tokenImage: url || p.tokenImage || "",
+        avatar: url || p.avatar || "",
         campaignTokenImages: url
           ? { ...(p.campaignTokenImages || {}), [activeCampaign.id]: url }
           : { ...(p.campaignTokenImages || {}) },
@@ -1451,6 +1501,10 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
     await saveCampaign({
       ...activeCampaign,
       campaignTokenUrl,
+      campaignImageUrl: campaignTokenUrl,
+      imageUrl: campaignTokenUrl,
+      coverImageUrl: campaignTokenUrl,
+      image: campaignTokenUrl,
       tokenUrl: campaignTokenUrl,
       tokenImage: campaignTokenUrl,
       playerTokenImages,
@@ -1470,7 +1524,7 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       ) : (
         <Card>
           <Text style={styles.sectionTitle}>Campaign Token</Text>
-          {campaignTokenUrl ? <Image source={{ uri: campaignTokenUrl }} style={styles.tokenPreview} /> : null}
+          {campaignTokenUrl ? <Image key={campaignTokenUrl} source={{ uri: campaignTokenUrl }} style={styles.tokenPreview} resizeMode="cover" /> : null}
           <TouchableOpacity style={styles.primaryButton} onPress={() => uploadTokenImage("campaign", setCampaignTokenUrl)} disabled={uploadingKey === "campaign"}>
             <Text style={styles.primaryButtonText}>{uploadingKey === "campaign" ? "Uploading..." : "Upload Campaign Token"}</Text>
           </TouchableOpacity>
@@ -1483,7 +1537,7 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
             return (
               <View key={key} style={styles.tokenRow}>
                 <Text style={styles.cardTitle}>{player.name || player.email}</Text>
-                {currentUrl ? <Image source={{ uri: currentUrl }} style={styles.tokenPreview} /> : null}
+                {currentUrl ? <Image key={currentUrl} source={{ uri: currentUrl }} style={styles.tokenPreview} resizeMode="cover" /> : null}
                 <TouchableOpacity style={styles.outlineWideButton} onPress={() => uploadTokenImage(`player-${key}`, (url) => setPlayerTokenUrls((current) => ({ ...current, [key]: url })))} disabled={uploadingKey === `player-${key}`}>
                   <Text style={styles.outlineButtonText}>{uploadingKey === `player-${key}` ? "Uploading..." : "Upload Player Token"}</Text>
                 </TouchableOpacity>
