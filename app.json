@@ -10,6 +10,10 @@
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
     },
-    "description": "Dungeon Calendar helps Dungeons & Dragons and tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures."
+    "description": "Dungeon Calendar helps Dungeons & Dragons and tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures.",
+    "android": {
+      "package": "com.anonymous.dungeoncalendar",
+      "versionCode": 11
+    }
   }
 }
