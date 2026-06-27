@@ -70,6 +70,49 @@ function dateKeyToParts(key = "") {
   };
 }
 
+function buildGeneratedSessionDates(finalDateKey, cadence = "weekly", count = 0) {
+  if (!finalDateKey || !count) return [];
+  const start = new Date(`${finalDateKey}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return [];
+  const safeCount = Math.max(0, Math.min(52, Number(count) || 0));
+  const dates = [];
+  for (let index = 1; index <= safeCount; index += 1) {
+    const next = new Date(start);
+    if (cadence === "monthly") next.setMonth(start.getMonth() + index);
+    else next.setDate(start.getDate() + (cadence === "biweekly" ? 14 : 7) * index);
+    dates.push(localDateKey(next));
+  }
+  return dates;
+}
+
+function playerTokenUrlForCampaign(player = {}, campaign = {}) {
+  const campaignId = campaign?.id || "";
+  const key = player?.id || player?.uid || normalizeEmail(player?.email || "");
+  return (
+    (campaignId && player?.campaignTokenImages?.[campaignId]) ||
+    (key && campaign?.playerTokenImages?.[key]) ||
+    player?.tokenImage ||
+    player?.tokenUrl ||
+    ""
+  );
+}
+
+function mergeCampaignTokenIntoPlayer(player = {}, campaign = {}) {
+  const campaignId = campaign?.id || "";
+  const key = player?.id || player?.uid || normalizeEmail(player?.email || "");
+  const tokenUrl = playerTokenUrlForCampaign(player, campaign);
+  if (!tokenUrl || !campaignId) return player;
+  return {
+    ...player,
+    tokenUrl,
+    tokenImage: player.tokenImage || tokenUrl,
+    campaignTokenImages: {
+      ...(player.campaignTokenImages || {}),
+      [campaignId]: tokenUrl,
+    },
+  };
+}
+
 function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
@@ -85,6 +128,12 @@ function normalizeCampaign(campaign = {}) {
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
     invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
+    playerTokenImages: campaign.playerTokenImages || {},
+    campaignTokenUrl: campaign.campaignTokenUrl || campaign.tokenUrl || campaign.tokenImage || "",
+    tokenUrl: campaign.tokenUrl || campaign.campaignTokenUrl || campaign.tokenImage || "",
+    tokenImage: campaign.tokenImage || campaign.tokenUrl || campaign.campaignTokenUrl || "",
+    recurringCadence: campaign.recurringCadence || "weekly",
+    recurringSessionCount: Number(campaign.recurringSessionCount || 4),
     availability: campaign.availability || {},
     unavailable: campaign.unavailable || {},
     chosenDate: campaign.chosenDate || "",
@@ -141,6 +190,9 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
     role: player.role || "Player",
     campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
     campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: player.characterName || "" } : {}),
+    campaignTokenImages: player.campaignTokenImages || {},
+    tokenImage: player.tokenImage || player.tokenUrl || "",
+    tokenUrl: player.tokenUrl || player.tokenImage || "",
     color: player.color || COLORS.green,
     invitePending: player.invitePending !== false,
   };
@@ -150,7 +202,7 @@ function campaignPlayers(campaign, user) {
   if (!campaign) return user ? [playerFromFirebaseUser(user)] : [];
   const byKey = new Map();
   const add = (player) => {
-    const record = campaignPlayerRecord(player, campaign.id);
+    const record = mergeCampaignTokenIntoPlayer(campaignPlayerRecord(player, campaign.id), campaign);
     const key = normalizeEmail(record.email) || record.id;
     byKey.set(key, { ...(byKey.get(key) || {}), ...record });
   };
@@ -167,11 +219,11 @@ function proposedDatesForCampaign(campaign) {
   const dmProposedFromAvailability = Object.entries(campaign.availability || {})
     .filter(([, ids]) => Array.isArray(ids) && ids.some((id) => dmIds.has(id)))
     .map(([key]) => key);
+  const manual = new Set(campaign.manuallySelectedDates || []);
   const keys = Array.from(new Set([
-    ...(campaign.manuallySelectedDates || []),
-    ...(campaign.generatedSessionDates || []),
+    ...manual,
     ...dmProposedFromAvailability,
-    campaign.chosenDate,
+    campaign.chosenDate && (manual.has(campaign.chosenDate) || dmProposedFromAvailability.includes(campaign.chosenDate)) ? campaign.chosenDate : "",
   ].filter(Boolean))).sort();
   return keys.map((key) => {
     const parts = dateKeyToParts(key);
@@ -423,7 +475,7 @@ function DateBadge({ month, day, weekday }) {
 
 function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaign, activePlayers = [], proposedDates = [], isDungeonMaster, setSelectedCampaignId }) {
   const profile = getFirebaseUserProfile(user);
-  const chosen = activeCampaign?.chosenDate ? dateKeyToParts(activeCampaign.chosenDate) : null;
+  const chosen = activeCampaign?.chosenDate && proposedDates.some((d) => d.key === activeCampaign.chosenDate) ? dateKeyToParts(activeCampaign.chosenDate) : null;
   const nextDate = chosen || proposedDates[0] || null;
   return (
     <Screen>
@@ -567,8 +619,14 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
     </View>
   );
 }
-function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposedDates = [], isDungeonMaster }) {
+function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposedDates = [], isDungeonMaster, plan }) {
   const [availabilityMode, setAvailabilityMode] = useState("available");
+  const [recurringCadence, setRecurringCadence] = useState(activeCampaign?.recurringCadence || "weekly");
+  const [recurringSessionCount, setRecurringSessionCount] = useState(String(activeCampaign?.recurringSessionCount || 4));
+  useEffect(() => {
+    setRecurringCadence(activeCampaign?.recurringCadence || "weekly");
+    setRecurringSessionCount(String(activeCampaign?.recurringSessionCount || 4));
+  }, [activeCampaign?.id, activeCampaign?.recurringCadence, activeCampaign?.recurringSessionCount]);
   const toggleAvailability = async (dateKey, status = availabilityMode) => {
     if (!activeCampaign || !user?.uid) return;
     const available = new Set(activeCampaign.availability?.[dateKey] || []);
@@ -614,11 +672,36 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
       manuallySelectedDates: (activeCampaign.manuallySelectedDates || []).filter((key) => key !== dateKey),
       generatedSessionDates: (activeCampaign.generatedSessionDates || []).filter((key) => key !== dateKey),
       chosenDate: activeCampaign.chosenDate === dateKey ? "" : activeCampaign.chosenDate,
+      sessionDate: activeCampaign.sessionDate === dateKey ? "" : activeCampaign.sessionDate,
+      selectedDate: activeCampaign.selectedDate === dateKey ? "" : activeCampaign.selectedDate,
+      finalDate: activeCampaign.finalDate === dateKey ? "" : activeCampaign.finalDate,
+      nextSessionDate: activeCampaign.nextSessionDate === dateKey ? "" : activeCampaign.nextSessionDate,
     });
   };
   const setChosen = async (dateKey) => {
     if (!activeCampaign || !isDungeonMaster) return;
-    await saveCampaign({ ...activeCampaign, chosenDate: dateKey });
+    const next = activeCampaign.chosenDate === dateKey ? "" : dateKey;
+    await saveCampaign({ ...activeCampaign, chosenDate: next, sessionDate: next, selectedDate: next, finalDate: next, nextSessionDate: next });
+  };
+  const generateRecurring = async () => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    const finalDate = activeCampaign.chosenDate;
+    if (!finalDate) {
+      Alert.alert("Choose Final Date", "Set one proposed date as chosen before generating recurring sessions.");
+      return;
+    }
+    const generated = buildGeneratedSessionDates(finalDate, recurringCadence, recurringSessionCount);
+    await saveCampaign({
+      ...activeCampaign,
+      generatedSessionDates: generated,
+      recurringCadence,
+      recurringSessionCount: Number(recurringSessionCount || 0),
+    });
+    Alert.alert("Recurring Dates Saved", `${generated.length} recurring session date(s) were saved for this campaign.`);
+  };
+  const removeRecurring = async () => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    await saveCampaign({ ...activeCampaign, generatedSessionDates: [] });
   };
   return (
     <Screen>
@@ -650,6 +733,28 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
           <AvailabilityDateRow key={d.key} date={d} navigate={navigate} isDungeonMaster={isDungeonMaster} onAvailable={() => toggleAvailability(d.key, "available")} onUnavailable={() => toggleAvailability(d.key, "unavailable")} onRemove={() => removeDate(d.key)} onSetChosen={() => setChosen(d.key)} />
         )) : <Text style={styles.helperText}>No dates have been proposed yet.</Text>}
       </Card>
+
+      {isDungeonMaster ? (
+        <Card>
+          <Text style={styles.sectionTitle}>Final Date & Recurring Sessions</Text>
+          <Text style={styles.helperText}>{activeCampaign?.chosenDate ? dateKeyToParts(activeCampaign.chosenDate).full : "Choose a final date before generating recurring sessions."}</Text>
+          {hasPlanFeature(plan, "advancedManagement") ? (
+            <>
+              <View style={styles.responseButtons}>
+                <TouchableOpacity style={[styles.voteButton, recurringCadence === "weekly" ? styles.voteSelected : null]} onPress={() => setRecurringCadence("weekly")}><Text style={styles.voteButtonText}>Weekly</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.voteButton, recurringCadence === "biweekly" ? styles.voteSelected : null]} onPress={() => setRecurringCadence("biweekly")}><Text style={styles.voteButtonText}>Biweekly</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.voteButton, recurringCadence === "monthly" ? styles.voteSelected : null]} onPress={() => setRecurringCadence("monthly")}><Text style={styles.voteButtonText}>Monthly</Text></TouchableOpacity>
+              </View>
+              <EditableField label="Number of Sessions" value={recurringSessionCount} onChangeText={setRecurringSessionCount} keyboardType="number-pad" />
+              <TouchableOpacity style={styles.primaryButton} onPress={generateRecurring}><Text style={styles.primaryButtonText}>Generate Recurring Dates</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.outlineWideButton} onPress={removeRecurring}><Text style={styles.outlineButtonText}>Remove Generated Dates</Text></TouchableOpacity>
+              {(activeCampaign?.generatedSessionDates || []).length ? <Text style={styles.notesText}>Generated sessions: {(activeCampaign.generatedSessionDates || []).map((key) => dateKeyToParts(key).label).join(", ")}</Text> : null}
+            </>
+          ) : (
+            <TouchableOpacity style={styles.outlineWideButton} onPress={() => navigate("plan")}><Text style={styles.outlineButtonText}>Recurring sessions require Guildmaster</Text></TouchableOpacity>
+          )}
+        </Card>
+      ) : null}
     </Screen>
   );
 }
@@ -1274,18 +1379,19 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
   );
 }
 function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate }) {
-  const [campaignTokenUrl, setCampaignTokenUrl] = useState(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
+  const campaignInitial = activeCampaign?.campaignTokenUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || "";
+  const [campaignTokenUrl, setCampaignTokenUrl] = useState(campaignInitial);
   const [playerTokenUrls, setPlayerTokenUrls] = useState({});
   const [uploadingKey, setUploadingKey] = useState("");
   useEffect(() => {
     const initial = {};
-    (activeCampaign?.invitedPlayers || []).forEach((p) => {
+    activePlayers.forEach((p) => {
       const key = p.id || p.uid || normalizeEmail(p.email);
-      if (key) initial[key] = p.tokenUrl || "";
+      if (key) initial[key] = playerTokenUrlForCampaign(p, activeCampaign);
     });
     setPlayerTokenUrls(initial);
-    setCampaignTokenUrl(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
-  }, [activeCampaign?.id]);
+    setCampaignTokenUrl(activeCampaign?.campaignTokenUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || "");
+  }, [activeCampaign?.id, JSON.stringify(activeCampaign?.playerTokenImages || {}), activePlayers.length]);
   const uploadTokenImage = async (targetKey, setter) => {
     if (!activeCampaign || !isDungeonMaster) return;
     if (!hasPlanFeature(plan, "tokenUploads")) {
@@ -1310,7 +1416,8 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       const blob = await response.blob();
       const ext = (uri.split(".").pop() || "jpg").split("?")[0].toLowerCase();
       const safeExt = ["jpg", "jpeg", "png", "webp"].includes(ext) ? ext : "jpg";
-      const imageRef = ref(storage, `campaignTokens/${activeCampaign.id}/${targetKey}-${Date.now()}.${safeExt}`);
+      const safeName = String(targetKey || "token").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const imageRef = ref(storage, `token-images/${activeCampaign.id}/${safeName}-${Date.now()}.${safeExt}`);
       await uploadBytes(imageRef, blob, { contentType: `image/${safeExt === "jpg" ? "jpeg" : safeExt}` });
       const url = await getDownloadURL(imageRef);
       setter(url);
@@ -1326,12 +1433,30 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       navigate("plan");
       return;
     }
+    const playerTokenImages = { ...(activeCampaign.playerTokenImages || {}) };
     const invitedPlayers = (activeCampaign.invitedPlayers || []).map((p) => {
       const key = p.id || p.uid || normalizeEmail(p.email);
-      return { ...p, tokenUrl: playerTokenUrls[key] || p.tokenUrl || "" };
+      const url = playerTokenUrls[key] || "";
+      if (key && url) playerTokenImages[key] = url;
+      if (key && !url) delete playerTokenImages[key];
+      return {
+        ...p,
+        tokenUrl: url || p.tokenUrl || "",
+        tokenImage: url || p.tokenImage || "",
+        campaignTokenImages: url
+          ? { ...(p.campaignTokenImages || {}), [activeCampaign.id]: url }
+          : { ...(p.campaignTokenImages || {}) },
+      };
     });
-    await saveCampaign({ ...activeCampaign, tokenUrl: campaignTokenUrl, campaignTokenUrl, invitedPlayers });
-    Alert.alert("Tokens Saved", "Uploaded token images and token links are synced to Firebase.");
+    await saveCampaign({
+      ...activeCampaign,
+      campaignTokenUrl,
+      tokenUrl: campaignTokenUrl,
+      tokenImage: campaignTokenUrl,
+      playerTokenImages,
+      invitedPlayers,
+    });
+    Alert.alert("Tokens Saved", "Uploaded token images are now synced to Firebase and will display on web and mobile.");
   };
   return (
     <Screen>
@@ -1350,11 +1475,11 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
             <Text style={styles.primaryButtonText}>{uploadingKey === "campaign" ? "Uploading..." : "Upload Campaign Token"}</Text>
           </TouchableOpacity>
           <EditableField label="Campaign Token Image URL" value={campaignTokenUrl} onChangeText={setCampaignTokenUrl} />
-          <Text style={styles.helperText}>Upload an image from your device or paste a URL. The saved image URL is stored on the same Firebase campaign used by the web app.</Text>
+          <Text style={styles.helperText}>Select Save Tokens after choosing an image. Saved images update the preview immediately and sync to the same Firebase fields used by the main app.</Text>
           <Text style={styles.sectionTitle}>Player Tokens</Text>
           {activePlayers.map((player) => {
-            const key = player.id || normalizeEmail(player.email);
-            const currentUrl = playerTokenUrls[key] || player.tokenUrl || "";
+            const key = player.id || player.uid || normalizeEmail(player.email);
+            const currentUrl = playerTokenUrls[key] || playerTokenUrlForCampaign(player, activeCampaign);
             return (
               <View key={key} style={styles.tokenRow}>
                 <Text style={styles.cardTitle}>{player.name || player.email}</Text>
