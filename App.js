@@ -1,2 +1,2 @@
 import "./global.css";
-export { default } from "./DungeonCalendarMainApp";
+export { default } from "./DungeonCalendarMobileApp";
