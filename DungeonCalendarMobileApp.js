@@ -161,11 +161,14 @@ function campaignPlayers(campaign, user) {
 
 function proposedDatesForCampaign(campaign) {
   if (!campaign) return [];
+  const dmIds = new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean));
+  const dmProposedFromAvailability = Object.entries(campaign.availability || {})
+    .filter(([, ids]) => Array.isArray(ids) && ids.some((id) => dmIds.has(id)))
+    .map(([key]) => key);
   const keys = Array.from(new Set([
     ...(campaign.manuallySelectedDates || []),
     ...(campaign.generatedSessionDates || []),
-    ...Object.keys(campaign.availability || {}),
-    ...Object.keys(campaign.unavailable || {}),
+    ...dmProposedFromAvailability,
     campaign.chosenDate,
   ].filter(Boolean))).sort();
   return keys.map((key) => {
@@ -256,6 +259,28 @@ function getPlanRank(planId) {
 
 function hasPlanFeature(planId, feature) {
   return !!planFeatures[normalizePlan(planId)]?.[feature];
+}
+
+
+function buildCalendarExportUrls(campaign, dateKey) {
+  if (!campaign || !dateKey) return null;
+  const start = new Date(`${dateKey}T${campaign.sessionTime || "18:00"}:00`);
+  const end = new Date(start.getTime() + Number(campaign.sessionDuration || 4) * 60 * 60 * 1000);
+  const title = `${campaign.name || "Dungeon Calendar"} Session`;
+  const details = `Dungeon Calendar session for ${campaign.name || "campaign"}.`;
+  const toGoogleDate = (date) => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const googleUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${toGoogleDate(start)}/${toGoogleDate(end)}&details=${encodeURIComponent(details)}`;
+  const outlookUrl = `https://outlook.live.com/calendar/0/deeplink/compose?subject=${encodeURIComponent(title)}&startdt=${encodeURIComponent(start.toISOString())}&enddt=${encodeURIComponent(end.toISOString())}&body=${encodeURIComponent(details)}`;
+  return { googleUrl, outlookUrl };
+}
+
+async function saveUserSettings(user, settings) {
+  if (!user?.uid) return;
+  await enableNetwork(db).catch(() => {});
+  await setDoc(doc(db, "users", user.uid), {
+    ...settings,
+    updatedAtServer: serverTimestamp(),
+  }, { merge: true });
 }
 
 function getPlanActionLabel(currentPlan, planId) {
@@ -547,6 +572,9 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
     const available = new Set(activeCampaign.availability?.[dateKey] || []);
     const unavailable = new Set(activeCampaign.unavailable?.[dateKey] || []);
     const manualDates = new Set(activeCampaign.manuallySelectedDates || []);
+    const dmIds = new Set([activeCampaign.ownerId, ...(activeCampaign.dungeonMasterIds || [])].filter(Boolean));
+    const dmProposed = manualDates.has(dateKey) || (activeCampaign.generatedSessionDates || []).includes(dateKey) || Array.from(available).some((id) => dmIds.has(id));
+    if (!isDungeonMaster && !dmProposed) return;
     const isAvailable = available.has(user.uid);
     const isUnavailable = unavailable.has(user.uid);
 
@@ -710,7 +738,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
     </Screen>
   );
 }
-function Players({ navigate, openSettings, activePlayers = [], activeCampaign, isDungeonMaster }) {
+function Players({ navigate, openSettings, activePlayers = [], activeCampaign, isDungeonMaster, plan }) {
   const deletePlayer = async (player) => {
     if (!activeCampaign || !isDungeonMaster) return;
     const email = normalizeEmail(player.email || "");
@@ -734,7 +762,7 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
       <Card>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Player List</Text>
-          {isDungeonMaster ? <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}><Text style={styles.outlineButtonText}>+ Add Player</Text></TouchableOpacity> : null}
+          {isDungeonMaster ? <View style={styles.inlineActions}><TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}><Text style={styles.outlineButtonText}>+ Add Player</Text></TouchableOpacity><TouchableOpacity style={styles.outlineButton} onPress={() => hasPlanFeature(plan, "tokenUploads") ? navigate("tokens") : navigate("plan")}><Text style={styles.outlineButtonText}>Tokens</Text></TouchableOpacity></View> : null}
         </View>
         {activePlayers.length ? activePlayers.map((p) => (
           <View key={`${p.id}-${p.email}`} style={styles.playerRow}>
@@ -784,8 +812,10 @@ function Results({ navigate, openSettings, activeCampaign, proposedDates = [], p
     </Screen>
   );
 }
-function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates = [], activePlayers = [] }) {
+function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates = [], activePlayers = [], plan }) {
   const chosen = activeCampaign?.chosenDate ? proposedDates.find((d) => d.key === activeCampaign.chosenDate) : proposedDates[0];
+  const calendarEvent = buildCalendarExportUrls(activeCampaign, chosen?.key);
+  const canExport = hasPlanFeature(plan, "calendarExport");
   return (
     <Screen>
       <Header title="Session Details" subtitle={activeCampaign?.name || "No selected campaign"} onSettings={openSettings} />
@@ -800,6 +830,17 @@ function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates 
         <Text style={styles.listHeading}>Notes</Text>
         <Text style={styles.notesText}>This session information is synced from the same Firebase campaign used by the main web app.</Text>
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
+      </Card>
+      <Card>
+        <Text style={styles.sectionTitle}>Calendar Links</Text>
+        {canExport && calendarEvent ? (
+          <>
+            <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL(calendarEvent.googleUrl)}><Text style={styles.outlineButtonText}>Add to Google Calendar</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL(calendarEvent.outlookUrl)}><Text style={styles.outlineButtonText}>Add to Outlook Calendar</Text></TouchableOpacity>
+          </>
+        ) : (
+          <TouchableOpacity style={styles.outlineWideButton} onPress={() => navigate("plan")}><Text style={styles.outlineButtonText}>Calendar export requires Adventurer or Guildmaster</Text></TouchableOpacity>
+        )}
       </Card>
     </Screen>
   );
@@ -856,20 +897,40 @@ function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMas
         <SettingsRow label="Default Session Duration" detail={`${activeCampaign?.sessionDuration || 4} hours`} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Default Location" detail={activeCampaign?.defaultLocation || "Not set"} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Proposed Dates" detail={`${proposedDatesForCampaign(activeCampaign).length} date(s)`} onPress={() => navigate("calendar")} />
+        <SettingsRow label="Token Images" detail="Guildmaster campaign/player tokens" onPress={() => navigate("tokens")} />
+        <SettingsRow label="Calendar Links" detail="Google Calendar / Outlook export" onPress={() => navigate("session")} />
         <SettingsRow label="Campaign Role" detail={isDungeonMaster ? "Dungeon Master" : "Player"} onPress={() => navigate("campaignDetail")} />
       </Card>
     </Screen>
   );
 }
-function Notifications({ navigate, openSettings }) {
+function Notifications({ navigate, openSettings, user, userProfile }) {
+  const notificationSettings = userProfile?.notificationSettings || {};
+  const toggleSetting = async (key) => {
+    const current = notificationSettings[key] !== false;
+    await saveUserSettings(user, {
+      notificationSettings: {
+        ...notificationSettings,
+        [key]: !current,
+      },
+    });
+  };
+  const row = (label, key, detail) => (
+    <SettingsRow
+      label={label}
+      detail={`${notificationSettings[key] !== false ? "On" : "Off"} · ${detail}`}
+      onPress={() => toggleSetting(key)}
+    />
+  );
   return (
     <Screen>
-      <Header title="Notifications" subtitle="Reminder settings" onSettings={openSettings} />
+      <Header title="Notifications" subtitle="Reminder settings synced to Firebase" onSettings={openSettings} />
       <Card>
-        <SettingsRow label="Enable Notifications" detail="On" onPress={() => navigate("notifications")} />
-        <SettingsRow label="Session Reminders" detail="1 day before" onPress={() => navigate("notifications")} />
-        <SettingsRow label="Player Availability Changes" detail="On" onPress={() => navigate("notifications")} />
-        <SettingsRow label="Proposed Dates Updates" detail="On" onPress={() => navigate("notifications")} />
+        {row("Enable Notifications", "enabled", "Master notification switch")}
+        {row("Session Reminders", "sessionReminders", "Before chosen session dates")}
+        {row("Player Availability Changes", "availabilityChanges", "When players update responses")}
+        {row("Proposed Date Updates", "proposedDateUpdates", "When DMs add or remove dates")}
+        <SettingsRow label="Open Plan Settings" detail="Notification features can be tied to plan level" onPress={() => navigate("plan")} />
       </Card>
     </Screen>
   );
@@ -983,9 +1044,11 @@ function PrivacyPolicyMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Privacy Policy</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>Dungeon Calendar collects account, campaign, scheduling, and subscription information necessary to provide the service.</Text>
-      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Subscription processing is handled by Stripe.</Text>
-      <Text style={styles.notesText}>We do not sell personal information.</Text>
-      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+      <Text style={styles.notesText}>We use this information to provide authentication, save campaigns, manage session dates, record player availability, process subscriptions, and support account features.</Text>
+      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Campaign, player, scheduling, and app data may be stored in Firebase services. Subscription processing is handled by Stripe.</Text>
+      <Text style={styles.notesText}>Dungeon Calendar does not sell personal information.</Text>
+      <Text style={styles.notesText}>You may update profile information in the app. For account deletion or privacy support, contact support@dungeoncalendar.com.</Text>
+      <Text style={styles.notesText}>Email: support@dungeoncalendar.com</Text>
     </SimpleInfoPage>
   );
 }
@@ -996,9 +1059,11 @@ function TermsOfServiceMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Terms of Service</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>By using Dungeon Calendar, you agree to use the service lawfully and responsibly.</Text>
-      <Text style={styles.notesText}>Subscriptions are managed through Stripe and may be modified or cancelled according to the applicable subscription terms.</Text>
-      <Text style={styles.notesText}>Users are responsible for campaign content they create and share.</Text>
-      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
+      <Text style={styles.notesText}>Dungeon Calendar provides campaign scheduling, account, player invite, availability, and subscription tools for tabletop RPG groups.</Text>
+      <Text style={styles.notesText}>Users are responsible for the campaign content, player information, images, tokens, dates, and messages they create or share.</Text>
+      <Text style={styles.notesText}>Paid plans are processed through Stripe. Subscription features, prices, and billing intervals may change over time. Users are responsible for managing subscriptions according to the applicable Stripe checkout and billing terms.</Text>
+      <Text style={styles.notesText}>Do not misuse the service, interfere with other users, upload unlawful content, or attempt to access accounts or campaigns you are not authorized to use.</Text>
+      <Text style={styles.notesText}>For support or terms questions, contact support@dungeoncalendar.com.</Text>
     </SimpleInfoPage>
   );
 }
@@ -1187,6 +1252,56 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
         <EditableField label="Role" value={role} onChangeText={setRole} />
         <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Player</Text></TouchableOpacity>
       </Card>
+    </Screen>
+  );
+}
+function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate }) {
+  const [campaignTokenUrl, setCampaignTokenUrl] = useState(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
+  const [playerTokenUrls, setPlayerTokenUrls] = useState({});
+  useEffect(() => {
+    const initial = {};
+    (activeCampaign?.invitedPlayers || []).forEach((p) => {
+      const key = p.id || p.uid || normalizeEmail(p.email);
+      if (key) initial[key] = p.tokenUrl || "";
+    });
+    setPlayerTokenUrls(initial);
+    setCampaignTokenUrl(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
+  }, [activeCampaign?.id]);
+  const saveTokens = async () => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    if (!hasPlanFeature(plan, "tokenUploads")) {
+      navigate("plan");
+      return;
+    }
+    const invitedPlayers = (activeCampaign.invitedPlayers || []).map((p) => {
+      const key = p.id || p.uid || normalizeEmail(p.email);
+      return { ...p, tokenUrl: playerTokenUrls[key] || p.tokenUrl || "" };
+    });
+    await saveCampaign({ ...activeCampaign, tokenUrl: campaignTokenUrl, campaignTokenUrl, invitedPlayers });
+    Alert.alert("Tokens Saved", "Token image links are synced to the campaign in Firebase.");
+  };
+  return (
+    <Screen>
+      <Header title="Token Images" subtitle="Guildmaster campaign/player tokens" onSettings={openSettings} />
+      {!hasPlanFeature(plan, "tokenUploads") ? (
+        <Card>
+          <Text style={styles.sectionTitle}>Guildmaster Feature</Text>
+          <Text style={styles.notesText}>Custom player token image uploads are included with the Guildmaster plan.</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("plan")}><Text style={styles.primaryButtonText}>View Plans</Text></TouchableOpacity>
+        </Card>
+      ) : (
+        <Card>
+          <Text style={styles.sectionTitle}>Campaign Token</Text>
+          <EditableField label="Campaign Token Image URL" value={campaignTokenUrl} onChangeText={setCampaignTokenUrl} />
+          <Text style={styles.helperText}>Paste the image URL used for this campaign token. It saves to the same Firebase campaign used by the web app.</Text>
+          <Text style={styles.sectionTitle}>Player Tokens</Text>
+          {activePlayers.map((player) => {
+            const key = player.id || normalizeEmail(player.email);
+            return <EditableField key={key} label={`${player.name || player.email} Token URL`} value={playerTokenUrls[key] || player.tokenUrl || ""} onChangeText={(value) => setPlayerTokenUrls((current) => ({ ...current, [key]: value }))} />;
+          })}
+          <TouchableOpacity style={styles.primaryButton} onPress={saveTokens}><Text style={styles.primaryButtonText}>Save Tokens</Text></TouchableOpacity>
+        </Card>
+      )}
     </Screen>
   );
 }
@@ -1575,6 +1690,8 @@ export default function DungeonCalendarMobileApp() {
         return <PlayerEditor {...props} />;
       case "availability":
         return <AvailabilityScreen {...props} />;
+      case "tokens":
+        return <TokenSettings {...props} />;
       case "results":
         return <Results {...props} />;
       case "settings":
