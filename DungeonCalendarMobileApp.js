@@ -367,31 +367,18 @@ async function saveCampaign(campaign) {
 }
 
 async function deleteCampaignById(id, campaign = null, user = null) {
-  if (!id) return;
-  if (campaign && user && !userIsDungeonMaster(user, campaign)) {
+  if (!id) throw new Error("Missing campaign id.");
+  if (!user) throw new Error("You must be signed in to delete a campaign.");
+  if (campaign && !userIsDungeonMaster(user, campaign)) {
     throw new Error("Only the Dungeon Master can delete this campaign.");
   }
   await enableNetwork(db).catch(() => {});
   const campaignRef = doc(db, "campaigns", id);
-  const tombstone = {
-    archived: true,
-    deleted: true,
-    deletedAt: new Date().toISOString(),
-    deletedAtServer: serverTimestamp(),
-    deletedBy: user?.uid || "",
-    updatedAt: new Date().toISOString(),
-    updatedAtServer: serverTimestamp(),
-  };
   try {
     await deleteDoc(campaignRef);
-    return;
   } catch (deleteError) {
-    try {
-      await updateDoc(campaignRef, tombstone);
-      return;
-    } catch (updateError) {
-      await setDoc(campaignRef, { ...(campaign || {}), ...tombstone }, { merge: true });
-    }
+    const code = deleteError?.code ? `${deleteError.code}: ` : "";
+    throw new Error(`${code}${deleteError?.message || "Firebase blocked the campaign delete. Check Firestore rules allow the campaign DM to delete campaigns."}`);
   }
 }
 
@@ -924,14 +911,15 @@ function AvailabilityDateRow({ date, navigate, isDungeonMaster, onAvailable, onU
     </TouchableOpacity>
   );
 }
-function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster, plan, user, userProfile }) {
+function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, setCampaigns, isDungeonMaster, plan, user, userProfile }) {
   const deleteCampaign = (campaign) => {
     if (!campaign || !userIsDungeonMaster(user, campaign)) return;
-    Alert.alert("Delete Campaign", `Delete ${campaign.name}? This also removes it from Firebase.`, [
+    Alert.alert("Delete Campaign", `Permanently delete ${campaign.name}? This removes it from Firebase and from all apps for every player. This cannot be undone.`, [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
         try {
           await deleteCampaignById(campaign.id, campaign, user);
+          setCampaigns?.((current) => current.filter((item) => item.id !== campaign.id));
           if (activeCampaign?.id === campaign.id) setSelectedCampaignId(null);
         } catch (error) {
           Alert.alert("Delete Failed", error?.message || "Could not delete this campaign. Make sure you are the Dungeon Master and try again.");
@@ -979,16 +967,17 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
     </Screen>
   );
 }
-function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, setSelectedCampaignId }) {
+function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, setSelectedCampaignId, setCampaigns }) {
   if (!activeCampaign) return <SimpleInfoPage title="Campaign Details" openSettings={openSettings}><Text style={styles.notesText}>No campaign is selected.</Text></SimpleInfoPage>;
   const dmDisplay = campaignDungeonMasterDisplayName(activeCampaign, user, userProfile);
   const deleteCurrent = () => {
     if (!userIsDungeonMaster(user, activeCampaign)) return;
-    Alert.alert("Delete Campaign", `Delete ${activeCampaign.name}?`, [
+    Alert.alert("Delete Campaign", `Permanently delete ${activeCampaign.name}? This removes it from Firebase and from all apps for every player. This cannot be undone.`, [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
         try {
           await deleteCampaignById(activeCampaign.id, activeCampaign, user);
+          setCampaigns?.((current) => current.filter((item) => item.id !== activeCampaign.id));
           setSelectedCampaignId?.(null);
           navigate("campaigns");
         } catch (error) {
@@ -2190,6 +2179,7 @@ export default function DungeonCalendarMobileApp() {
     isDungeonMaster,
     selectedCampaignId,
     setSelectedCampaignId,
+    setCampaigns,
     openSettings: () => setSettingsOpen(true),
     openDeleteAccount: () => setDeleteAccountOpen(true),
     handleLogout,
