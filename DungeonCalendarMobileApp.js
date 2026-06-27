@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import {
   Alert,
   Image,
+  Linking,
   Modal,
   Platform,
   SafeAreaView,
@@ -14,6 +15,15 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
+import { auth, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+
+const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
+
+GoogleSignin.configure({
+  webClientId: WEB_CLIENT_ID,
+  offlineAccess: false,
+});
 
 const COLORS = {
   bg: "#050505",
@@ -119,18 +129,19 @@ function Screen({ children }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onGoogleLogin, onEmailLogin, authError }) {
   return (
     <SafeAreaView style={styles.loginScreen}>
       <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.loginLogo} resizeMode="contain" />
       <Text style={styles.loginTitle}>Dungeon Calendar</Text>
       <Text style={styles.loginSubtitle}>Plan. Play. Remember.</Text>
-      <TouchableOpacity style={styles.primaryButton} onPress={onLogin}>
+      <TouchableOpacity style={styles.primaryButton} onPress={onGoogleLogin}>
         <Text style={styles.primaryButtonText}>Continue with Google</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.secondaryButton} onPress={onLogin}>
+      <TouchableOpacity style={styles.secondaryButton} onPress={onEmailLogin}>
         <Text style={styles.secondaryButtonText}>Continue with Email</Text>
       </TouchableOpacity>
+      {authError ? <Text style={styles.errorText}>{authError}</Text> : null}
       <Text style={styles.legalText}>By continuing, you agree to our Terms of Service and Privacy Policy.</Text>
     </SafeAreaView>
   );
@@ -278,7 +289,7 @@ function CalendarScreen({ navigate, openSettings }) {
         <View style={styles.sectionHeader}>
           <Text style={styles.calendarTitle}>May 2025</Text>
           {isDungeonMaster ? (
-            <TouchableOpacity style={styles.smallRedButton} onPress={() => Alert.alert("Propose Date", "This will open the date proposal editor.")}>
+            <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("proposeDate")}>
               <Text style={styles.smallRedButtonText}>+ Propose Date</Text>
             </TouchableOpacity>
           ) : null}
@@ -311,10 +322,10 @@ function AvailabilityDateRow({ date, navigate }) {
         <View style={styles.responseButtons}>
           {isDungeonMaster ? (
             <>
-              <TouchableOpacity style={[styles.voteButton, date.status === "selected" ? styles.voteSelected : null]} onPress={() => Alert.alert("Chosen Date", `${date.label} selected.`)}>
+              <TouchableOpacity style={[styles.voteButton, date.status === "selected" ? styles.voteSelected : null]} onPress={() => navigate("session")}>
                 <Text style={styles.voteButtonText}>{date.status === "selected" ? "Chosen Date" : "Set as Chosen"}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.voteButtonMuted} onPress={() => Alert.alert("Remove Date", `Remove ${date.label}?`)}>
+              <TouchableOpacity style={styles.voteButtonMuted} onPress={() => navigate("proposeDate")}>
                 <Text style={styles.voteMutedText}>Remove</Text>
               </TouchableOpacity>
             </>
@@ -337,7 +348,7 @@ function Campaigns({ navigate, openSettings }) {
       <Header title="Campaigns" subtitle="Manage your adventures" onSettings={openSettings} />
       <View style={styles.searchRow}>
         <Text style={styles.searchText}>⌕  Search campaigns...</Text>
-        <TouchableOpacity style={styles.smallRedButton} onPress={() => Alert.alert("Add Campaign", "Campaign creation editor opens here.")}>
+        <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("campaignEditor")}>
           <Text style={styles.smallRedButtonText}>+ Add Campaign</Text>
         </TouchableOpacity>
       </View>
@@ -366,11 +377,11 @@ function CampaignDetail({ openSettings }) {
       <Header title="Campaign Details" subtitle="Curse of Strahd" onSettings={openSettings} />
       <Card>
         <View style={styles.detailsHero} />
-        <SettingsRow label="Campaign Name" detail="Curse of Strahd" onPress={() => Alert.alert("Edit", "Campaign name editor opens here.")} />
-        <SettingsRow label="Campaign Level" detail="Level 7" onPress={() => Alert.alert("Edit", "Campaign level editor opens here.")} />
-        <SettingsRow label="Dungeon Master" detail="DM (You)" onPress={() => Alert.alert("Edit", "DM settings open here.")} />
-        <SettingsRow label="Campaign Image" detail="Edit image" onPress={() => Alert.alert("Edit", "Image picker opens here.")} />
-        <TouchableOpacity style={styles.primaryButton} onPress={() => Alert.alert("Saved", "Campaign changes saved.")}>
+        <SettingsRow label="Campaign Name" detail="Curse of Strahd" onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Campaign Level" detail="Level 7" onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Dungeon Master" detail="DM (You)" onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Campaign Image" detail="Edit image" onPress={() => navigate("campaignEditor")} />
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("campaigns")}>
           <Text style={styles.primaryButtonText}>Save Changes</Text>
         </TouchableOpacity>
       </Card>
@@ -392,12 +403,12 @@ function Players({ openSettings }) {
       <Card>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Player List</Text>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => Alert.alert("Add Player", "Invite/add player form opens here.")}>
+          <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("playerEditor")}>
             <Text style={styles.outlineButtonText}>+ Add Player</Text>
           </TouchableOpacity>
         </View>
         {players.map((p) => (
-          <TouchableOpacity key={p.name} style={styles.playerRow} onPress={() => Alert.alert(p.name, "Player editor opens here.")}>
+          <TouchableOpacity key={p.name} style={styles.playerRow} onPress={() => navigate("playerEditor")}>
             <View style={styles.avatar}><Text style={styles.avatarText}>{p.name[0]}</Text></View>
             <View style={styles.playerInfo}>
               <Text style={styles.campaignTitle}>{p.name}</Text>
@@ -413,7 +424,7 @@ function Players({ openSettings }) {
           <Text style={styles.sectionTitle}>Quick Availability</Text>
           <Text style={styles.sessionText}>Update your proposed-date responses</Text>
         </View>
-        <TouchableOpacity style={styles.primaryButtonSmall} onPress={() => Alert.alert("Availability", "Availability editor opens here.")}>
+        <TouchableOpacity style={styles.primaryButtonSmall} onPress={() => navigate("availability")}>
           <Text style={styles.primaryButtonText}>Update</Text>
         </TouchableOpacity>
       </Card>
@@ -441,7 +452,7 @@ function Results({ openSettings }) {
       <Card>
         <Text style={styles.sectionTitle}>Auto Pick Best Date</Text>
         <Text style={styles.helperText}>The best date is chosen from DM-proposed dates using player availability responses.</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={() => Alert.alert("Best Date", "May 24 is currently the best proposed date.")}>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("session")}>
           <Text style={styles.primaryButtonText}>Pick May 24</Text>
         </TouchableOpacity>
       </Card>
@@ -463,7 +474,7 @@ function SessionDetails({ openSettings }) {
         <InfoLine icon="⌖" text="Tom’s House" />
         <Text style={styles.listHeading}>Notes</Text>
         <Text style={styles.notesText}>This date was selected from the proposed session dates after players marked availability.</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={() => Alert.alert("RSVP", "You are marked as going.")}>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}>
           <Text style={styles.primaryButtonText}>I’m Going</Text>
         </TouchableOpacity>
       </Card>
@@ -487,7 +498,7 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout 
         <SettingsRow label="Plan Settings" detail="Guildmaster Plan" onPress={() => navigate("plan")} />
         <SettingsRow label="Privacy Policy" detail="View privacy information" onPress={() => navigate("privacy")} />
         <SettingsRow label="Terms of Service" detail="View terms" onPress={() => navigate("terms")} />
-        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.15" onPress={() => navigate("about")} />
+        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.16" onPress={() => navigate("about")} />
       </Card>
       <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}><Text style={styles.logoutText}>Log Out</Text></TouchableOpacity>
       <TouchableOpacity style={styles.deleteAccountButton} onPress={openDeleteAccount}><Text style={styles.deleteAccountText}>Delete Account</Text></TouchableOpacity>
@@ -501,9 +512,9 @@ function ProfileScreen({ openSettings }) {
       <Header title="Profile" subtitle="Profile Information" onSettings={openSettings} />
       <Card>
         <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
-        <SettingsRow label="Display Name" detail="DM (You)" onPress={() => Alert.alert("Edit", "Display name editor opens here.")} />
-        <SettingsRow label="Email" detail="dm@example.com" onPress={() => Alert.alert("Email", "Email settings open here.")} />
-        <SettingsRow label="Role" detail="Dungeon Master" onPress={() => Alert.alert("Role", "Role settings open here.")} />
+        <SettingsRow label="Display Name" detail="DM (You)" onPress={() => navigate("profileEdit")} />
+        <SettingsRow label="Email" detail="dm@example.com" onPress={() => navigate("profileEdit")} />
+        <SettingsRow label="Role" detail="Dungeon Master" onPress={() => navigate("profileEdit")} />
       </Card>
     </Screen>
   );
@@ -514,10 +525,10 @@ function CampaignSettings({ openSettings }) {
     <Screen>
       <Header title="Campaign Settings" subtitle="Default settings" onSettings={openSettings} />
       <Card>
-        <SettingsRow label="Default Campaign" detail="Curse of Strahd" onPress={() => Alert.alert("Default Campaign", "Selector opens here.")} />
-        <SettingsRow label="Default Session Duration" detail="4 hours" onPress={() => Alert.alert("Duration", "Duration editor opens here.")} />
-        <SettingsRow label="Default Location" detail="Tom’s House" onPress={() => Alert.alert("Location", "Location editor opens here.")} />
-        <SettingsRow label="Automatically Suggest Dates" detail="On" onPress={() => Alert.alert("Auto Suggest", "Toggle saved.")} />
+        <SettingsRow label="Default Campaign" detail="Curse of Strahd" onPress={() => navigate("campaignSettings")} />
+        <SettingsRow label="Default Session Duration" detail="4 hours" onPress={() => navigate("campaignSettings")} />
+        <SettingsRow label="Default Location" detail="Tom’s House" onPress={() => navigate("campaignSettings")} />
+        <SettingsRow label="Automatically Suggest Dates" detail="On" onPress={() => navigate("campaignSettings")} />
       </Card>
     </Screen>
   );
@@ -528,10 +539,10 @@ function Notifications({ openSettings }) {
     <Screen>
       <Header title="Notifications" subtitle="Reminder settings" onSettings={openSettings} />
       <Card>
-        <SettingsRow label="Enable Notifications" detail="On" onPress={() => Alert.alert("Notifications", "Toggle saved.")} />
-        <SettingsRow label="Session Reminders" detail="1 day before" onPress={() => Alert.alert("Reminders", "Reminder editor opens here.")} />
-        <SettingsRow label="Player Availability Changes" detail="On" onPress={() => Alert.alert("Availability", "Toggle saved.")} />
-        <SettingsRow label="Proposed Dates Updates" detail="On" onPress={() => Alert.alert("Proposed Dates", "Toggle saved.")} />
+        <SettingsRow label="Enable Notifications" detail="On" onPress={() => navigate("notifications")} />
+        <SettingsRow label="Session Reminders" detail="1 day before" onPress={() => navigate("notifications")} />
+        <SettingsRow label="Player Availability Changes" detail="On" onPress={() => navigate("notifications")} />
+        <SettingsRow label="Proposed Dates Updates" detail="On" onPress={() => navigate("notifications")} />
       </Card>
     </Screen>
   );
@@ -564,7 +575,7 @@ function PlanSettings({ openSettings }) {
             </View>
           ))}
 
-          <TouchableOpacity style={plan.active ? styles.activePlanButton : styles.outlineWideButton} onPress={() => Alert.alert(plan.name, plan.active ? "This is your current plan." : "Plan selection opens here.")}>
+          <TouchableOpacity style={plan.active ? styles.activePlanButton : styles.outlineWideButton} onPress={() => {}}>
             <Text style={plan.active ? styles.activePlanText : styles.outlineButtonText}>
               {plan.active ? "Current Plan" : `Choose ${plan.name}`}
             </Text>
@@ -586,16 +597,202 @@ function SimpleInfoPage({ title, children, openSettings }) {
   );
 }
 
+const aboutFeatureCards = [
+  { title: "Campaign Management", text: "Create campaigns, invite players, assign Dungeon Masters, and keep every adventure organized in one place." },
+  { title: "Session Scheduling", text: "Use a shared calendar to find dates that work for the whole party without endless group chats." },
+  { title: "Availability Tracking", text: "Players can mark available or unavailable dates so Dungeon Masters can choose the best session time." },
+  { title: "Player Invites", text: "Send campaign invite links by email or copy a ready-to-share message for your group chat." },
+  { title: "Cross-Device Access", text: "Use Dungeon Calendar from desktop, tablet, or phone with the same Firebase account and profile." },
+  { title: "Paid DM Tools", text: "Adventurer and Guildmaster plans unlock more campaign creation, calendar exports, tracking tools, and premium features." },
+];
+
+const aboutTrustItems = ["Campaign Scheduling", "Availability Tracking", "Email Invites", "Cross-Device Access", "Firebase Security", "Stripe Billing"];
+const aboutAudienceItems = ["Dungeon Masters", "D&D players", "Pathfinder groups", "Online campaigns", "In-person tables", "Tabletop RPG communities"];
+
 function AboutPage({ openSettings }) {
+  const openDungeonCalendar = () => Linking.openURL("https://dungeoncalendar.com");
+
   return (
     <Screen>
       <Header title="About" subtitle="Dungeon Calendar" onSettings={openSettings} />
-      <Card style={styles.aboutCard}>
+
+      <Card style={styles.aboutHeroCard}>
         <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.aboutLogo} resizeMode="contain" />
         <Text style={styles.aboutTitle}>Dungeon Calendar</Text>
-        <Text style={styles.sessionText}>Version 1.0.15</Text>
-        <Text style={styles.notesText}>The ultimate tool for managing your D&D campaigns.</Text>
-        <Text style={styles.notesText}>© 2025 Dungeon Calendar. All rights reserved.</Text>
+        <Text style={styles.aboutKicker}>D&D Campaign Scheduling & Session Planning</Text>
+        <Text style={styles.sessionText}>Version 1.0.16</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={openDungeonCalendar}>
+          <Text style={styles.primaryButtonText}>Open DungeonCalendar.com</Text>
+        </TouchableOpacity>
+      </Card>
+
+      <Card>
+        <Text style={styles.aboutEyebrow}>About Dungeon Calendar</Text>
+        <Text style={styles.aboutHeadline}>Schedule tabletop RPG sessions without endless group chats.</Text>
+        <Text style={styles.aboutBody}>
+          Dungeon Calendar is a campaign scheduling and player management app built for Dungeons & Dragons, Pathfinder, and other tabletop RPG groups. Dungeon Masters can manage campaigns, collect player availability, invite party members, and choose final session dates from one organized calendar.
+        </Text>
+      </Card>
+
+      <Card style={styles.aboutAmberCard}>
+        <Text style={styles.aboutAmberHeadline}>Built for parties that actually want to play.</Text>
+        <Text style={styles.aboutBody}>Use Dungeon Calendar to reduce scheduling friction, organize player responses, and keep your next adventure moving.</Text>
+        <View style={styles.aboutMiniCard}>
+          <Text style={styles.aboutMiniTitle}>D&D scheduling</Text>
+          <Text style={styles.aboutMiniText}>Coordinate sessions with a visual campaign calendar.</Text>
+        </View>
+        <View style={styles.aboutMiniCard}>
+          <Text style={styles.aboutMiniTitle}>Dungeon Master tools</Text>
+          <Text style={styles.aboutMiniText}>Manage campaigns, invites, players, and final dates.</Text>
+        </View>
+        <View style={styles.aboutMiniCard}>
+          <Text style={styles.aboutMiniTitle}>Player availability</Text>
+          <Text style={styles.aboutMiniText}>Let everyone mark available and unavailable dates.</Text>
+        </View>
+      </Card>
+
+      <Card>
+        <Text style={styles.aboutEyebrow}>Trusted Dungeon Master Tools</Text>
+        <Text style={styles.sectionTitle}>A shared scheduling hub for every adventure.</Text>
+        <View style={styles.aboutPillGrid}>
+          {aboutTrustItems.map((item) => (
+            <View key={item} style={styles.aboutPill}>
+              <Text style={styles.aboutPillText}>{item}</Text>
+            </View>
+          ))}
+        </View>
+      </Card>
+
+      <Card>
+        <Text style={styles.aboutEyebrow}>Features</Text>
+        <Text style={styles.sectionTitle}>Everything your campaign needs to plan the next session.</Text>
+        {aboutFeatureCards.map((feature) => (
+          <View key={feature.title} style={styles.aboutFeatureCard}>
+            <Text style={styles.aboutFeatureTitle}>{feature.title}</Text>
+            <Text style={styles.aboutFeatureText}>{feature.text}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <Card>
+        <Text style={styles.aboutEyebrow}>Who it is for</Text>
+        <View style={styles.aboutPillGrid}>
+          {aboutAudienceItems.map((item) => (
+            <View key={item} style={styles.aboutPill}>
+              <Text style={styles.aboutPillText}>{item}</Text>
+            </View>
+          ))}
+        </View>
+      </Card>
+
+      <Card style={styles.aboutCtaCard}>
+        <Text style={styles.aboutHeadline}>Ready to start your next adventure?</Text>
+        <Text style={styles.aboutBody}>Create a free account, invite your party, and find the best date for your next campaign session.</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={openDungeonCalendar}>
+          <Text style={styles.primaryButtonText}>Create Your Free Account</Text>
+        </TouchableOpacity>
+        <Text style={styles.aboutFooter}>© 2026 Dungeon Calendar. All rights reserved.</Text>
+      </Card>
+    </Screen>
+  );
+}
+
+
+function EditableField({ label, value }) {
+  const [text, setText] = useState(value);
+  return (
+    <View style={styles.editableField}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput value={text} onChangeText={setText} style={styles.fieldInput} placeholderTextColor="#6b7280" />
+    </View>
+  );
+}
+
+function ProposeDateScreen({ openSettings }) {
+  return (
+    <Screen>
+      <Header title="Propose Dates" subtitle="DM date selection" onSettings={openSettings} />
+      <Card>
+        <Text style={styles.sectionTitle}>Selected Dates</Text>
+        <Text style={styles.helperText}>Choose the dates your players can vote on.</Text>
+        <EditableField label="Date 1" value="May 24, 2025" />
+        <EditableField label="Date 2" value="May 31, 2025" />
+        <EditableField label="Date 3" value="Jun 7, 2025" />
+        <TouchableOpacity style={styles.primaryButton}>
+          <Text style={styles.primaryButtonText}>Save Proposed Dates</Text>
+        </TouchableOpacity>
+      </Card>
+    </Screen>
+  );
+}
+
+function CampaignEditor({ openSettings }) {
+  return (
+    <Screen>
+      <Header title="Edit Campaign" subtitle="Curse of Strahd" onSettings={openSettings} />
+      <Card>
+        <EditableField label="Campaign Name" value="Curse of Strahd" />
+        <EditableField label="Campaign Level" value="7" />
+        <EditableField label="Default Location" value="Tom’s House" />
+        <EditableField label="Default Duration" value="4 hours" />
+        <TouchableOpacity style={styles.primaryButton}>
+          <Text style={styles.primaryButtonText}>Save Campaign</Text>
+        </TouchableOpacity>
+      </Card>
+    </Screen>
+  );
+}
+
+function PlayerEditor({ openSettings }) {
+  return (
+    <Screen>
+      <Header title="Player Editor" subtitle="Edit player details" onSettings={openSettings} />
+      <Card>
+        <EditableField label="Player Name" value="Jessica" />
+        <EditableField label="Character / Role" value="Level 7 Rogue" />
+        <EditableField label="Availability" value="Available" />
+        <TouchableOpacity style={styles.primaryButton}>
+          <Text style={styles.primaryButtonText}>Save Player</Text>
+        </TouchableOpacity>
+      </Card>
+    </Screen>
+  );
+}
+
+function AvailabilityScreen({ openSettings }) {
+  return (
+    <Screen>
+      <Header title="My Availability" subtitle="Respond to proposed dates" onSettings={openSettings} />
+      <Card>
+        {proposedDates.map((date) => (
+          <View key={date.key} style={styles.availabilityRow}>
+            <DateBadge month={date.month} day={date.day} weekday={date.weekday} />
+            <View style={styles.eventInfo}>
+              <Text style={styles.sessionTitle}>{date.label}, 2025</Text>
+              <View style={styles.responseButtons}>
+                <TouchableOpacity style={styles.voteAvailable}><Text style={styles.voteButtonText}>Available</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.voteUnavailable}><Text style={styles.voteButtonText}>Unavailable</Text></TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        ))}
+      </Card>
+    </Screen>
+  );
+}
+
+function ProfileEditScreen({ openSettings }) {
+  return (
+    <Screen>
+      <Header title="Edit Profile" subtitle="Profile information" onSettings={openSettings} />
+      <Card>
+        <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
+        <EditableField label="Display Name" value="DM (You)" />
+        <EditableField label="Email" value="dm@example.com" />
+        <EditableField label="Role" value="Dungeon Master" />
+        <TouchableOpacity style={styles.primaryButton}>
+          <Text style={styles.primaryButtonText}>Save Profile</Text>
+        </TouchableOpacity>
       </Card>
     </Screen>
   );
@@ -603,7 +800,7 @@ function AboutPage({ openSettings }) {
 
 function SettingsRow({ label, detail, onPress }) {
   return (
-    <TouchableOpacity style={styles.settingsRow} activeOpacity={0.8} onPress={onPress || (() => Alert.alert(label, "Editor opens here."))}>
+    <TouchableOpacity style={styles.settingsRow} activeOpacity={0.8} onPress={onPress}>
       <View style={{ flex: 1, paddingRight: 12 }}>
         <Text style={styles.menuItemText}>{label}</Text>
         <Text style={styles.resultMeta}>{detail}</Text>
@@ -683,7 +880,7 @@ function DeleteAccountModal({ visible, onClose }) {
 
   const confirmDelete = () => {
     if (!canDelete) return;
-    Alert.alert("Account deletion requested", "Production deletion should re-authenticate and delete Firebase account/data.");
+    setUser(null);
     closeAndReset();
   };
 
@@ -754,7 +951,8 @@ function BottomNav({ route, navigate, openSettings }) {
 
 export default function DungeonCalendarMobileApp() {
   const [route, setRoute] = useState("dashboard");
-  const [loggedIn, setLoggedIn] = useState(true);
+  const [user, setUser] = useState(auth.currentUser);
+  const [authError, setAuthError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
 
@@ -766,10 +964,46 @@ export default function DungeonCalendarMobileApp() {
     setRoute(next);
   };
 
+  const handleGoogleLogin = async () => {
+    setAuthError("");
+    try {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const signInResult = await GoogleSignin.signIn();
+      const idToken = signInResult?.data?.idToken || signInResult?.idToken;
+      if (!idToken) throw new Error("Google Sign-In did not return an ID token.");
+      const result = await signInToFirebaseWithGoogleIdToken(idToken);
+      setUser(result.user);
+      setRoute("dashboard");
+    } catch (error) {
+      if (error?.code === statusCodes.SIGN_IN_CANCELLED) {
+        setAuthError("Google sign-in was cancelled.");
+      } else {
+        setAuthError(error?.message || "Google sign-in failed.");
+      }
+    }
+  };
+
+  const handleEmailLogin = () => {
+    setAuthError("Email login screen should connect to the same Firebase Email/Password provider as the main app.");
+  };
+
   const handleLogout = () => {
     Alert.alert("Log Out", "Are you sure you want to log out?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Log Out", style: "destructive", onPress: () => { setSettingsOpen(false); setLoggedIn(false); setRoute("dashboard"); } },
+      {
+        text: "Log Out",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await signOut();
+            await GoogleSignin.signOut().catch(() => {});
+          } finally {
+            setSettingsOpen(false);
+            setUser(null);
+            setRoute("dashboard");
+          }
+        },
+      },
     ]);
   };
 
@@ -788,14 +1022,24 @@ export default function DungeonCalendarMobileApp() {
         return <Campaigns {...props} />;
       case "campaignDetail":
         return <CampaignDetail {...props} />;
+      case "campaignEditor":
+        return <CampaignEditor {...props} />;
+      case "proposeDate":
+        return <ProposeDateScreen {...props} />;
       case "players":
         return <Players {...props} />;
+      case "playerEditor":
+        return <PlayerEditor {...props} />;
+      case "availability":
+        return <AvailabilityScreen {...props} />;
       case "results":
         return <Results {...props} />;
       case "settings":
         return <UserSettings {...props} />;
       case "profile":
         return <ProfileScreen {...props} />;
+      case "profileEdit":
+        return <ProfileEditScreen {...props} />;
       case "campaignSettings":
         return <CampaignSettings {...props} />;
       case "notifications":
@@ -815,8 +1059,8 @@ export default function DungeonCalendarMobileApp() {
     }
   }, [route]);
 
-  if (!loggedIn) {
-    return <LoginScreen onLogin={() => setLoggedIn(true)} />;
+  if (!user) {
+    return <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />;
   }
 
   return (
@@ -999,9 +1243,26 @@ const styles = StyleSheet.create({
   infoText: { color: COLORS.white, fontSize: 14, marginLeft: 10 },
   notesText: { color: COLORS.muted, lineHeight: 20, marginBottom: 16 },
   profileLogo: { width: 118, height: 118, alignSelf: "center", marginBottom: 14 },
-  aboutCard: { alignItems: "center" },
-  aboutLogo: { width: 190, height: 190, marginBottom: 14 },
+  aboutHeroCard: { alignItems: "center", borderColor: COLORS.redDark },
+  aboutLogo: { width: 150, height: 150, marginBottom: 12 },
   aboutTitle: { color: COLORS.gold, fontSize: 30, fontWeight: "900", textAlign: "center", marginBottom: 8 },
+  aboutKicker: { color: "#fca5a5", fontSize: 11, fontWeight: "900", letterSpacing: 1.4, textAlign: "center", textTransform: "uppercase", marginBottom: 6 },
+  aboutEyebrow: { color: "#fca5a5", fontSize: 11, fontWeight: "900", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 },
+  aboutHeadline: { color: COLORS.white, fontSize: 25, fontWeight: "900", lineHeight: 31, marginBottom: 12 },
+  aboutBody: { color: COLORS.muted, fontSize: 14, lineHeight: 23, marginBottom: 14 },
+  aboutAmberCard: { borderColor: "#92400e", backgroundColor: "rgba(69, 26, 3, 0.38)" },
+  aboutAmberHeadline: { color: "#fde68a", fontSize: 23, fontWeight: "900", lineHeight: 29, marginBottom: 10 },
+  aboutMiniCard: { borderWidth: 1, borderColor: COLORS.border, backgroundColor: "rgba(0,0,0,0.35)", borderRadius: 12, padding: 12, marginTop: 10 },
+  aboutMiniTitle: { color: COLORS.white, fontSize: 14, fontWeight: "900" },
+  aboutMiniText: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  aboutPillGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 12 },
+  aboutPill: { borderWidth: 1, borderColor: COLORS.border, backgroundColor: "#090909", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginRight: 8, marginBottom: 8 },
+  aboutPillText: { color: COLORS.white, fontSize: 12, fontWeight: "900" },
+  aboutFeatureCard: { borderWidth: 1, borderColor: COLORS.border, backgroundColor: "#090909", borderRadius: 12, padding: 13, marginTop: 10 },
+  aboutFeatureTitle: { color: COLORS.white, fontSize: 15, fontWeight: "900" },
+  aboutFeatureText: { color: COLORS.muted, fontSize: 12, lineHeight: 19, marginTop: 6 },
+  aboutCtaCard: { borderColor: COLORS.redDark, backgroundColor: "rgba(69, 10, 10, 0.72)" },
+  aboutFooter: { color: COLORS.muted, fontSize: 12, textAlign: "center", marginTop: 14 },
   settingsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#1f1f1f" },
   logoutButton: { backgroundColor: "rgba(153, 27, 27, 0.25)", borderWidth: 1, borderColor: COLORS.red, borderRadius: 12, paddingVertical: 15, alignItems: "center", marginBottom: 12 },
   logoutText: { color: COLORS.red, fontSize: 16, fontWeight: "900" },
@@ -1027,6 +1288,10 @@ const styles = StyleSheet.create({
   deleteConfirmText: { color: COLORS.white, fontSize: 15, fontWeight: "900" },
   cancelDeleteButton: { backgroundColor: COLORS.panel2, borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 10 },
   cancelDeleteText: { color: COLORS.white, fontSize: 15, fontWeight: "800" },
+  editableField: { marginBottom: 14 },
+  fieldLabel: { color: COLORS.gold, fontSize: 13, fontWeight: "900", marginBottom: 7 },
+  fieldInput: { minHeight: 48, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.panel2, color: COLORS.white, paddingHorizontal: 12 },
+  errorText: { color: "#fca5a5", fontSize: 13, textAlign: "center", marginTop: 14, lineHeight: 18 },
   bottomNav: {
     position: "absolute",
     left: 0,

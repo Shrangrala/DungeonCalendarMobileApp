@@ -1,5 +1,0 @@
-Dungeon Calendar Mobile Version 15
-
-Updated from versionCode 14 to versionCode 15.
-Updated versionName/version fields to 1.0.15.
-Kept the functional layout fixes, clickable navigation, logout confirmation, delete account confirmation, logo placement, Plan Settings, and DM/player calendar behavior.
