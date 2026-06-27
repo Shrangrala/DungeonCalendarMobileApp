@@ -9,7 +9,7 @@ It adds a native Google sign-in screen first, then passes the Google ID token in
 Open `App.js` and replace:
 
 ```js
-PASTE_YOUR_GOOGLE_WEB_CLIENT_ID_HERE
+PASTE\_YOUR\_GOOGLE\_WEB\_CLIENT\_ID\_HERE
 ```
 
 with your Firebase/Google Cloud **Web application OAuth Client ID**.
@@ -28,17 +28,18 @@ npm install --legacy-peer-deps
 
 ```powershell
 cd android
-.\gradlew.bat bundleRelease
+.\\gradlew.bat bundleRelease
 ```
 
 Upload:
 
 ```text
-android\app\build\outputs\bundle\release\app-release.aab
+android\\app\\build\\outputs\\bundle\\release\\app-release.aab
 ```
 
 ## Version
 
-This package is set to Android `versionCode 8` and `versionName 1.0.7`.
+This package is set to Android `versionCode 11` and `versionName 1.0.11`.
 
 If Google Play says version code was already used, increase both `app.json` and `android/app/build.gradle` to the next number.
+
