@@ -49,6 +49,13 @@ function makeId(prefix = "item") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function dateKeyToParts(key = "") {
   const date = new Date(`${key}T00:00:00`);
   if (Number.isNaN(date.getTime())) return { month: "---", day: "--", weekday: "---", label: key || "No date" };
@@ -194,30 +201,88 @@ async function deleteCampaignById(id) {
   await deleteDoc(doc(db, "campaigns", id));
 }
 
+const planOrder = ["free", "adventurer", "guildmaster"];
+
+function normalizePlan(planId = "free") {
+  return planOrder.includes(planId) ? planId : "free";
+}
+
+function normalizeBillingInterval(interval = "monthly") {
+  return ["monthly", "yearly"].includes(interval) ? interval : "monthly";
+}
+
+const planLimits = {
+  free: { name: "Free", campaigns: 1, monthlyPrice: 0, yearlyPrice: 0 },
+  adventurer: { name: "Adventurer", campaigns: 5, monthlyPrice: 2.99, yearlyPrice: 29.99 },
+  guildmaster: { name: "Guildmaster", campaigns: Infinity, monthlyPrice: 4.99, yearlyPrice: 49.99 },
+};
+
+const planFeatures = {
+  free: { autoPick: false, calendarExport: false, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false },
+  adventurer: { autoPick: true, calendarExport: true, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false },
+  guildmaster: { autoPick: true, calendarExport: true, fullTracking: true, playerInvites: true, advancedManagement: true, tokenUploads: true },
+};
+
+const stripePaymentLinks = {
+  adventurer: {
+    monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
+    yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06",
+  },
+  guildmaster: {
+    monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
+    yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04",
+  },
+};
+
+function formatPlanPrice(planId, interval = "monthly") {
+  const safePlan = normalizePlan(planId);
+  if (safePlan === "free") return "$0";
+  const planInfo = planLimits[safePlan];
+  const amount = interval === "yearly" ? planInfo.yearlyPrice : planInfo.monthlyPrice;
+  return `$${Number(amount).toFixed(2)}${interval === "yearly" ? "/year" : "/month"}`;
+}
+
+function yearlySavingsLabel(planId) {
+  const safePlan = normalizePlan(planId);
+  if (safePlan === "free") return "";
+  const info = planLimits[safePlan];
+  const savings = (info.monthlyPrice * 12) - info.yearlyPrice;
+  return savings > 0 ? `or $${info.yearlyPrice.toFixed(2)}/year — save $${savings.toFixed(2)}` : `or $${info.yearlyPrice.toFixed(2)}/year`;
+}
+
+function getPlanRank(planId) {
+  return planOrder.indexOf(normalizePlan(planId));
+}
+
+function hasPlanFeature(planId, feature) {
+  return !!planFeatures[normalizePlan(planId)]?.[feature];
+}
+
+function getPlanActionLabel(currentPlan, planId) {
+  const active = normalizePlan(currentPlan);
+  const target = normalizePlan(planId);
+  if (target === active) return "Active";
+  return getPlanRank(target) > getPlanRank(active) ? `Upgrade to ${planLimits[target].name}` : `Downgrade to ${planLimits[target].name}`;
+}
+
 const planCards = [
   {
     id: "free",
-    name: "Free Plan",
-    price: "$0",
-    tagline: "For getting started",
-    features: ["Create and manage your first campaign", "Basic scheduling and player availability", "Core calendar tools"],
-    active: false,
+    name: "Free",
+    description: "Perfect for casual adventurers trying out the app for their first campaign.",
+    features: ["Create 1 campaign", "Unlimited invited campaigns", "Unlimited invited character roles", "Shared scheduling calendar", "Session reminders", "Player invite tools", "Manual final date selection"],
   },
   {
     id: "adventurer",
-    name: "Adventurer Plan",
-    price: "$4.99/mo",
-    tagline: "For active groups",
-    features: ["More campaigns and sessions", "Expanded scheduling tools", "Better reminders and campaign organization"],
-    active: false,
+    name: "Adventurer",
+    description: "Built for active players juggling multiple parties, characters, and weekly sessions.",
+    features: ["Create up to 5 campaigns", "Unlimited invited campaigns", "Unlimited invited character roles", "Shared scheduling calendar", "Session reminders", "Player invite tools", "Manual final date selection", "Automatic best-date voting", "Calendar export support"],
   },
   {
     id: "guildmaster",
-    name: "Guildmaster Plan",
-    price: "$9.99/mo",
-    tagline: "For Dungeon Masters running multiple groups",
-    features: ["Full campaign scheduling tools", "Advanced availability and auto-pick support", "Best for multiple campaigns and larger groups"],
-    active: true,
+    name: "Guildmaster",
+    description: "The ultimate toolkit for dedicated Dungeon Masters and large gaming groups.",
+    features: ["Unlimited campaign creation", "Unlimited invited campaigns", "Unlimited invited character roles", "Shared scheduling calendar", "Session reminders", "Player invite tools", "Manual final date selection", "Automatic best-date voting", "Calendar export support", "Full party availability tracking", "Advanced campaign controls", "Custom player token image uploads", "Priority access to future premium features"],
   },
 ];
 
@@ -405,7 +470,7 @@ function QuickAction({ icon, label, detail, onPress }) {
   );
 }
 
-function MiniCalendar({ compact = false, proposedDates = [] }) {
+function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, user, isDungeonMaster, availabilityMode = "available", onDatePress }) {
   const now = proposedDates[0]?.key ? new Date(`${proposedDates[0].key}T00:00:00`) : new Date();
   const year = now.getFullYear();
   const month = now.getMonth();
@@ -413,11 +478,24 @@ function MiniCalendar({ compact = false, proposedDates = [] }) {
   const start = new Date(year, month, 1 - first.getDay());
   const selectedKeys = new Set(proposedDates.map((d) => d.key));
   const chosenKey = proposedDates.find((d) => d.status === "selected")?.key;
+  const currentUserId = user?.uid || "";
   const cells = Array.from({ length: 35 }, (_, i) => {
     const date = new Date(start);
     date.setDate(start.getDate() + i);
-    const key = date.toISOString().slice(0, 10);
-    return { key, day: String(date.getDate()), inMonth: date.getMonth() === month };
+    const key = localDateKey(date);
+    const availableIds = activeCampaign?.availability?.[key] || [];
+    const unavailableIds = activeCampaign?.unavailable?.[key] || [];
+    const dmAvailable = availableIds.some((id) => activeCampaign?.dungeonMasterIds?.includes(id) || id === activeCampaign?.ownerId);
+    return {
+      key,
+      day: String(date.getDate()),
+      inMonth: date.getMonth() === month,
+      availableIds,
+      unavailableIds,
+      dmAvailable,
+      availableByUser: availableIds.includes(currentUserId),
+      unavailableByUser: unavailableIds.includes(currentUserId),
+    };
   });
   const names = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   return (
@@ -428,30 +506,67 @@ function MiniCalendar({ compact = false, proposedDates = [] }) {
         {cells.map((cell) => {
           const proposed = selectedKeys.has(cell.key);
           const selected = chosenKey === cell.key;
+          const disabled = !activeCampaign || (!isDungeonMaster && !cell.dmAvailable);
+          const userMarked = cell.availableByUser || cell.unavailableByUser;
           return (
-            <View key={cell.key} style={[styles.dayCell, compact ? styles.dayCellCompact : null, selected ? styles.selectedDay : proposed ? styles.proposedDay : null]}>
-              <Text style={[styles.dayNum, compact ? styles.dayNumCompact : null, selected ? styles.activeDayText : null, !cell.inMonth ? { color: "#52525b" } : null]}>{cell.day}</Text>
-              {proposed ? <View style={[styles.eventDot, selected ? styles.goldDot : null]} /> : null}
-            </View>
+            <TouchableOpacity
+              key={cell.key}
+              activeOpacity={disabled ? 1 : 0.75}
+              disabled={disabled}
+              onPress={() => onDatePress?.(cell.key)}
+              style={[
+                styles.dayCell,
+                compact ? styles.dayCellCompact : null,
+                selected ? styles.selectedDay : proposed ? styles.proposedDay : null,
+                cell.availableByUser ? styles.availableDay : null,
+                cell.unavailableByUser ? styles.unavailableDay : null,
+                disabled ? styles.disabledDay : null,
+              ]}
+            >
+              <Text style={[styles.dayNum, compact ? styles.dayNumCompact : null, selected || userMarked ? styles.activeDayText : null, !cell.inMonth ? { color: "#52525b" } : null]}>{cell.day}</Text>
+              {proposed ? <View style={[styles.eventDot, selected ? styles.goldDot : cell.unavailableByUser ? styles.redDot : null]} /> : null}
+              {cell.dmAvailable && !isDungeonMaster ? <Text style={styles.dmOpenText}>DM</Text> : null}
+            </TouchableOpacity>
           );
         })}
       </View>
       <View style={styles.legendRow}>
         <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.blue }]} /><Text style={styles.legendText}>Proposed</Text></View>
+        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.green }]} /><Text style={styles.legendText}>Available</Text></View>
+        <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.red }]} /><Text style={styles.legendText}>Unavailable</Text></View>
         <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.gold }]} /><Text style={styles.legendText}>Chosen</Text></View>
       </View>
+      {!isDungeonMaster ? <Text style={styles.helperText}>Players can only mark dates after the DM proposes/marks them available, matching the web app.</Text> : null}
     </View>
   );
 }
 function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposedDates = [], isDungeonMaster }) {
-  const toggleAvailability = async (dateKey, status) => {
+  const [availabilityMode, setAvailabilityMode] = useState("available");
+  const toggleAvailability = async (dateKey, status = availabilityMode) => {
     if (!activeCampaign || !user?.uid) return;
     const available = new Set(activeCampaign.availability?.[dateKey] || []);
     const unavailable = new Set(activeCampaign.unavailable?.[dateKey] || []);
-    if (status === "available") { available.add(user.uid); unavailable.delete(user.uid); }
-    if (status === "unavailable") { unavailable.add(user.uid); available.delete(user.uid); }
+    const manualDates = new Set(activeCampaign.manuallySelectedDates || []);
+    const isAvailable = available.has(user.uid);
+    const isUnavailable = unavailable.has(user.uid);
+
+    if (status === "available") {
+      if (isAvailable) {
+        available.delete(user.uid);
+        if (isDungeonMaster) manualDates.delete(dateKey);
+      } else {
+        available.add(user.uid);
+        unavailable.delete(user.uid);
+        if (isDungeonMaster) manualDates.add(dateKey);
+      }
+    }
+    if (status === "unavailable") {
+      if (isUnavailable) unavailable.delete(user.uid);
+      else { unavailable.add(user.uid); available.delete(user.uid); }
+    }
     await saveCampaign({
       ...activeCampaign,
+      manuallySelectedDates: Array.from(manualDates),
       availability: { ...(activeCampaign.availability || {}), [dateKey]: Array.from(available) },
       unavailable: { ...(activeCampaign.unavailable || {}), [dateKey]: Array.from(unavailable) },
     });
@@ -487,7 +602,15 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
             </TouchableOpacity>
           ) : null}
         </View>
-        <MiniCalendar proposedDates={proposedDates} />
+        <View style={styles.responseButtons}>
+          <TouchableOpacity style={[styles.voteAvailable, availabilityMode === "available" ? styles.voteSelected : null]} onPress={() => setAvailabilityMode("available")}>
+            <Text style={styles.voteButtonText}>Available</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.voteUnavailable, availabilityMode === "unavailable" ? styles.voteSelected : null]} onPress={() => setAvailabilityMode("unavailable")}>
+            <Text style={styles.voteButtonText}>Not Available</Text>
+          </TouchableOpacity>
+        </View>
+        <MiniCalendar proposedDates={proposedDates} activeCampaign={activeCampaign} user={user} isDungeonMaster={isDungeonMaster} availabilityMode={availabilityMode} onDatePress={(key) => toggleAvailability(key, availabilityMode)} />
       </Card>
 
       <Card>
@@ -529,7 +652,7 @@ function AvailabilityDateRow({ date, navigate, isDungeonMaster, onAvailable, onU
     </TouchableOpacity>
   );
 }
-function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster }) {
+function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster, plan, user }) {
   const deleteCampaign = (campaign) => {
     if (!campaign) return;
     Alert.alert("Delete Campaign", `Delete ${campaign.name}? This also removes it from Firebase.`, [
@@ -542,7 +665,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
       <Header title="Campaigns" subtitle="Only campaigns you created or joined" onSettings={openSettings} />
       <View style={styles.searchRow}>
         <Text style={styles.searchText}>Firebase-linked campaigns</Text>
-        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => navigate("campaignEditor")}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
+        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignEditor"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
       </View>
       {campaigns.length ? campaigns.map((c) => {
         const dm = c.ownerId || c.dungeonMasterIds?.[0] || "DM";
@@ -635,7 +758,7 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
     </Screen>
   );
 }
-function Results({ navigate, openSettings, activeCampaign, proposedDates = [] }) {
+function Results({ navigate, openSettings, activeCampaign, proposedDates = [], plan }) {
   const best = [...proposedDates].sort((a, b) => (b.available - b.unavailable) - (a.available - a.unavailable))[0];
   return (
     <Screen>
@@ -655,8 +778,8 @@ function Results({ navigate, openSettings, activeCampaign, proposedDates = [] })
       </Card>
       <Card>
         <Text style={styles.sectionTitle}>Auto Pick Best Date</Text>
-        <Text style={styles.helperText}>The best date is chosen from proposed dates using player availability responses.</Text>
-        {best ? <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("session")}><Text style={styles.primaryButtonText}>Best: {best.full || best.label}</Text></TouchableOpacity> : null}
+        <Text style={styles.helperText}>{hasPlanFeature(plan, "autoPick") ? "The best date is chosen from proposed dates using player availability responses." : "Automatic best-date voting is included with Adventurer and Guildmaster plans."}</Text>
+        {best ? <TouchableOpacity style={hasPlanFeature(plan, "autoPick") ? styles.primaryButton : styles.outlineWideButton} onPress={() => hasPlanFeature(plan, "autoPick") ? navigate("session") : navigate("plan")}><Text style={hasPlanFeature(plan, "autoPick") ? styles.primaryButtonText : styles.outlineButtonText}>{hasPlanFeature(plan, "autoPick") ? `Best: ${best.full || best.label}` : "Upgrade Plan"}</Text></TouchableOpacity> : null}
       </Card>
     </Screen>
   );
@@ -685,7 +808,7 @@ function InfoLine({ icon, text }) {
   return <View style={styles.infoLine}><Icon color={COLORS.gold}>{icon}</Icon><Text style={styles.infoText}>{text}</Text></View>;
 }
 
-function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout }) {
+function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout, plan }) {
   return (
     <Screen>
       <Header title="User Settings" subtitle="Account and app settings" onSettings={openSettings} />
@@ -694,10 +817,10 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout 
         <SettingsRow label="Profile Information" detail="Name, email, avatar" onPress={() => navigate("profile")} />
         <SettingsRow label="Notifications" detail="Session reminders and invite updates" onPress={() => navigate("notifications")} />
         <SettingsRow label="Campaign Settings" detail="Default campaign and session settings" onPress={() => navigate("campaignSettings")} />
-        <SettingsRow label="Plan Settings" detail="Guildmaster Plan" onPress={() => navigate("plan")} />
+        <SettingsRow label="Plan Settings" detail={`${planLimits[normalizePlan(plan)].name} Plan`} onPress={() => navigate("plan")} />
         <SettingsRow label="Privacy Policy" detail="View privacy information" onPress={() => navigate("privacy")} />
         <SettingsRow label="Terms of Service" detail="View terms" onPress={() => navigate("terms")} />
-        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.16" onPress={() => navigate("about")} />
+        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.18" onPress={() => navigate("about")} />
       </Card>
       <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}><Text style={styles.logoutText}>Log Out</Text></TouchableOpacity>
       <TouchableOpacity style={styles.deleteAccountButton} onPress={openDeleteAccount}><Text style={styles.deleteAccountText}>Delete Account</Text></TouchableOpacity>
@@ -752,28 +875,94 @@ function Notifications({ navigate, openSettings }) {
   );
 }
 
-function PlanSettings({ openSettings }) {
+function PlanSettings({ openSettings, user, userProfile, plan, billingInterval }) {
+  const [selectedPlan, setSelectedPlan] = useState("");
+  const [selectedInterval, setSelectedInterval] = useState(normalizeBillingInterval(billingInterval));
+  const activePlan = normalizePlan(plan || userProfile?.plan || "free");
+  const activeInterval = normalizeBillingInterval(billingInterval || userProfile?.billingInterval || "monthly");
+
+  const startCheckout = async (planId) => {
+    const safePlan = normalizePlan(planId);
+    if (safePlan === activePlan) return;
+    if (safePlan === "free") {
+      await setDoc(doc(db, "users", user.uid), { plan: "free", billingInterval: "monthly", updatedAt: new Date().toISOString(), updatedAtServer: serverTimestamp() }, { merge: true });
+      Alert.alert("Plan Updated", "Your account was moved to the Free plan.");
+      return;
+    }
+    setSelectedPlan(safePlan);
+  };
+
+  const continueToStripe = async () => {
+    const safePlan = normalizePlan(selectedPlan);
+    const safeInterval = normalizeBillingInterval(selectedInterval);
+    const baseUrl = stripePaymentLinks[safePlan]?.[safeInterval];
+    if (!baseUrl) {
+      Alert.alert("Stripe", "No Stripe payment link is configured for that plan and billing cycle.");
+      return;
+    }
+    await setDoc(doc(db, "users", user.uid), {
+      pendingStripePlan: safePlan,
+      pendingStripeBillingInterval: safeInterval,
+      pendingStripeEmail: user?.email || "",
+      pendingStripeStartedAt: new Date().toISOString(),
+      updatedAtServer: serverTimestamp(),
+    }, { merge: true });
+    const url = `${baseUrl}?prefilled_email=${encodeURIComponent(user?.email || "")}&client_reference_id=${encodeURIComponent(user?.uid || "")}&stripe_plan=${encodeURIComponent(safePlan)}&stripe_billing=${encodeURIComponent(safeInterval)}`;
+    Linking.openURL(url).catch(() => Alert.alert("Stripe", "Could not open Stripe checkout."));
+  };
+
   return (
     <Screen>
-      <Header title="Plan Settings" subtitle="Synced with the main web app" onSettings={openSettings} />
+      <Header title="Plan Options" subtitle="Same plans and Stripe links as the main web app" onSettings={openSettings} />
       <Card>
         <Text style={styles.sectionTitle}>Current Plan</Text>
-        <Text style={styles.planTitle}>Managed on Web</Text>
-        <Text style={styles.helperText}>Subscription status and billing are tied to your Firebase account and Stripe customer record from the main app.</Text>
+        <Text style={styles.planTitle}>{planLimits[activePlan].name}</Text>
+        <Text style={styles.helperText}>{activePlan === "free" ? "$0" : `${formatPlanPrice(activePlan, activeInterval)} · billed ${activeInterval}`}</Text>
+        <Text style={styles.notesText}>Subscription status is synced to your Firebase user account. Paid plans unlock the same features as the main web app.</Text>
       </Card>
-      {planCards.map((plan) => (
-        <Card key={plan.id}>
-          <View style={styles.sectionHeader}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.campaignTitle}>{plan.name}</Text>
-              <Text style={styles.sessionText}>{plan.tagline}</Text>
+
+      <Card>
+        <Text style={styles.sectionTitle}>Stripe subscription sync is automatic</Text>
+        <Text style={styles.notesText}>Choose a paid plan to open Stripe Checkout. After checkout, return to Dungeon Calendar and the web app/mobile app use the same Firebase account plan.</Text>
+      </Card>
+
+      {planCards.map((item) => {
+        const isActive = activePlan === item.id;
+        return (
+          <Card key={item.id} style={isActive ? styles.activePlanCard : null}>
+            <View style={styles.sectionHeader}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.campaignTitle}>{item.name}</Text>
+                <Text style={styles.sessionText}>{item.description}</Text>
+              </View>
+              <Text style={styles.planPrice}>{item.id === "free" ? "$0" : formatPlanPrice(item.id, "monthly")}</Text>
             </View>
-            <Text style={styles.planPrice}>{plan.price}</Text>
+            {item.id !== "free" ? <Text style={styles.helperText}>{yearlySavingsLabel(item.id)}</Text> : null}
+            {item.features.map((feature) => <View key={feature} style={styles.planFeatureRow}><Text style={styles.planCheck}>•</Text><Text style={styles.planFeatureText}>{feature}</Text></View>)}
+            <TouchableOpacity style={isActive ? styles.activePlanButton : styles.outlineWideButton} onPress={() => startCheckout(item.id)} disabled={isActive}>
+              <Text style={isActive ? styles.activePlanText : styles.outlineButtonText}>{getPlanActionLabel(activePlan, item.id)}</Text>
+            </TouchableOpacity>
+          </Card>
+        );
+      })}
+
+      {selectedPlan ? (
+        <Card>
+          <Text style={styles.sectionTitle}>Checkout</Text>
+          <Text style={styles.helperText}>{planLimits[selectedPlan].name} Plan — {formatPlanPrice(selectedPlan, selectedInterval)}</Text>
+          <View style={styles.billingToggleRow}>
+            <TouchableOpacity style={[styles.billingToggle, selectedInterval === "monthly" ? styles.billingToggleActive : null]} onPress={() => setSelectedInterval("monthly")}>
+              <Text style={styles.billingToggleText}>Monthly — {formatPlanPrice(selectedPlan, "monthly")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.billingToggle, selectedInterval === "yearly" ? styles.billingToggleActive : null]} onPress={() => setSelectedInterval("yearly")}>
+              <Text style={styles.billingToggleText}>Yearly — {formatPlanPrice(selectedPlan, "yearly")}</Text>
+            </TouchableOpacity>
           </View>
-          {plan.features.map((feature) => <View key={feature} style={styles.planFeatureRow}><Text style={styles.planCheck}>✓</Text><Text style={styles.planFeatureText}>{feature}</Text></View>)}
-          <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL("https://dungeoncalendar.com") }><Text style={styles.outlineButtonText}>Manage on Web</Text></TouchableOpacity>
+          <Text style={styles.notesText}>Payment details are collected by Stripe. Dungeon Calendar never stores card numbers.</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={continueToStripe}><Text style={styles.primaryButtonText}>Continue to Stripe - {formatPlanPrice(selectedPlan, selectedInterval)}</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.outlineWideButton} onPress={() => setSelectedPlan("")}><Text style={styles.outlineButtonText}>Cancel</Text></TouchableOpacity>
         </Card>
-      ))}
+      ) : null}
     </Screen>
   );
 }
@@ -1006,8 +1195,14 @@ function AvailabilityScreen({ openSettings, user, activeCampaign, proposedDates 
     if (!activeCampaign || !user?.uid) return;
     const available = new Set(activeCampaign.availability?.[dateKey] || []);
     const unavailable = new Set(activeCampaign.unavailable?.[dateKey] || []);
-    if (status === "available") { available.add(user.uid); unavailable.delete(user.uid); }
-    if (status === "unavailable") { unavailable.add(user.uid); available.delete(user.uid); }
+    if (status === "available") {
+      if (available.has(user.uid)) available.delete(user.uid);
+      else { available.add(user.uid); unavailable.delete(user.uid); }
+    }
+    if (status === "unavailable") {
+      if (unavailable.has(user.uid)) unavailable.delete(user.uid);
+      else { unavailable.add(user.uid); available.delete(user.uid); }
+    }
     await saveCampaign({ ...activeCampaign, availability: { ...(activeCampaign.availability || {}), [dateKey]: Array.from(available) }, unavailable: { ...(activeCampaign.unavailable || {}), [dateKey]: Array.from(unavailable) } });
   };
   return (
@@ -1083,6 +1278,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
             <Text style={styles.drawerTitle}>Settings</Text>
             <TouchableOpacity onPress={onClose}><Text style={styles.closeText}>×</Text></TouchableOpacity>
           </View>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.drawerScrollContent}>
 
           <Card>
             <Text style={styles.menuGroup}>Recent Results</Text>
@@ -1118,6 +1314,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
           </Card>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -1223,6 +1420,7 @@ export default function DungeonCalendarMobileApp() {
   const [campaigns, setCampaigns] = useState([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [syncStatus, setSyncStatus] = useState("connecting");
+  const [userProfile, setUserProfile] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
@@ -1235,6 +1433,7 @@ export default function DungeonCalendarMobileApp() {
     if (!user) {
       setCampaigns([]);
       setSelectedCampaignId("");
+      setUserProfile(null);
       setSyncStatus("signed-out");
       return undefined;
     }
@@ -1242,6 +1441,12 @@ export default function DungeonCalendarMobileApp() {
     setSyncStatus("connecting");
     enableNetwork(db).catch((error) => {
       console.warn("Could not force Firestore network on:", error);
+    });
+    const unsubscribeProfile = onSnapshot(doc(db, "users", user.uid), { includeMetadataChanges: true }, (snap) => {
+      setUserProfile(snap.exists() ? snap.data() : null);
+    }, (error) => {
+      console.warn("Mobile profile sync failed:", error);
+      setUserProfile(null);
     });
     unsubscribeSync = onSnapshotsInSync(db, () => {
       setSyncStatus("live");
@@ -1261,6 +1466,7 @@ export default function DungeonCalendarMobileApp() {
     });
     return () => {
       unsubscribe();
+      unsubscribeProfile();
       unsubscribeSync();
     };
   }, [user]);
@@ -1328,6 +1534,8 @@ export default function DungeonCalendarMobileApp() {
   const activePlayers = campaignPlayers(activeCampaign, user);
   const proposedDates = proposedDatesForCampaign(activeCampaign);
   const isDungeonMaster = userIsDungeonMaster(user, activeCampaign);
+  const plan = normalizePlan(userProfile?.plan || "free");
+  const billingInterval = normalizeBillingInterval(userProfile?.billingInterval || "monthly");
 
   const props = {
     navigate,
@@ -1344,6 +1552,9 @@ export default function DungeonCalendarMobileApp() {
     handleLogout,
     syncStatus,
     refreshFirebaseNetwork,
+    userProfile,
+    plan,
+    billingInterval,
   };
 
   const screen = useMemo(() => {
@@ -1389,7 +1600,7 @@ export default function DungeonCalendarMobileApp() {
       default:
         return <Dashboard {...props} />;
     }
-  }, [route, user, campaigns, selectedCampaignId]);
+  }, [route, user, campaigns, selectedCampaignId, userProfile]);
 
   if (!user) {
     return <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />;
@@ -1527,9 +1738,14 @@ const styles = StyleSheet.create({
   dayNumCompact: { fontSize: 13 },
   selectedDay: { backgroundColor: COLORS.redDark },
   proposedDay: { borderWidth: 1, borderColor: COLORS.blue },
+  availableDay: { backgroundColor: "rgba(34, 197, 94, 0.28)", borderWidth: 1, borderColor: COLORS.green },
+  unavailableDay: { backgroundColor: "rgba(220, 38, 38, 0.26)", borderWidth: 1, borderColor: COLORS.red },
+  disabledDay: { opacity: 0.42 },
   activeDayText: { fontWeight: "900" },
   eventDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.blue, marginTop: 2 },
   goldDot: { backgroundColor: COLORS.gold },
+  redDot: { backgroundColor: COLORS.red },
+  dmOpenText: { color: COLORS.gold, fontSize: 9, fontWeight: "900", marginTop: 2 },
   legendRow: { flexDirection: "row", marginTop: 10, justifyContent: "center" },
   legendItem: { flexDirection: "row", alignItems: "center", marginHorizontal: 8 },
   legendDot: { width: 8, height: 8, borderRadius: 4 },
@@ -1610,6 +1826,10 @@ const styles = StyleSheet.create({
   planFeatureRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 8 },
   planCheck: { color: COLORS.green, fontSize: 14, fontWeight: "900", marginTop: 1, marginRight: 8 },
   planFeatureText: { color: COLORS.muted, fontSize: 12, flex: 1, lineHeight: 18 },
+  billingToggleRow: { gap: 10, marginVertical: 12 },
+  billingToggle: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, padding: 12, backgroundColor: "rgba(0,0,0,0.35)" },
+  billingToggleActive: { borderColor: COLORS.gold, backgroundColor: "rgba(146, 64, 14, 0.35)" },
+  billingToggleText: { color: COLORS.white, fontWeight: "900" },
   confirmBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.82)", alignItems: "center", justifyContent: "center", padding: 18 },
   confirmBox: { width: "100%", maxWidth: 420, backgroundColor: COLORS.bg, borderRadius: 18, borderWidth: 1, borderColor: COLORS.red, padding: 20 },
   confirmIcon: { color: COLORS.red, fontSize: 46, textAlign: "center", marginBottom: 8 },
@@ -1650,6 +1870,7 @@ const styles = StyleSheet.create({
   navActive: { color: COLORS.red },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.72)", justifyContent: "flex-end" },
   drawer: { maxHeight: "88%", backgroundColor: COLORS.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 16, paddingBottom: 30, borderWidth: 1, borderColor: COLORS.border },
+  drawerScrollContent: { paddingBottom: 24 },
   drawerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   drawerTitle: { color: COLORS.white, fontSize: 24, fontWeight: "900" },
   closeText: { color: COLORS.white, fontSize: 34 },
