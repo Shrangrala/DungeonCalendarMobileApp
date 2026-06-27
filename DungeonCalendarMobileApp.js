@@ -18,7 +18,7 @@ import {
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signOut as firebaseSignOut } from "./firebase";
 import { updateProfile } from "firebase/auth";
-import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
+import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
 
@@ -161,12 +161,22 @@ function normalizeList(values = []) {
 
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
+  const ownerId = campaign.ownerId || campaign.ownerUID || campaign.ownerUid || campaign.createdBy || campaign.createdById || campaign.creatorId || campaign.dmId || campaign.dmUid || campaign.dungeonMasterId || "";
+  const dungeonMasterIds = Array.from(new Set(normalizeList([
+    ...(campaign.dungeonMasterIds || []),
+    ...(campaign.dmIds || []),
+    ...(campaign.dmUIDs || []),
+    campaign.dungeonMasterId,
+    campaign.dmId,
+    campaign.dmUid,
+    ownerId,
+  ]).filter(Boolean)));
   return {
     ...campaign,
     id,
     name: campaign.name || "Untitled Campaign",
-    ownerId: campaign.ownerId || "",
-    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds),
+    ownerId,
+    dungeonMasterIds,
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
     invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
@@ -313,7 +323,37 @@ function campaignUserReminder(campaign = {}, user = null) {
 
 function userIsDungeonMaster(user, campaign) {
   if (!user || !campaign) return false;
-  return campaign.ownerId === user.uid || campaign.dungeonMasterIds?.includes(user.uid);
+  const uid = user.uid || "";
+  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  const dmIds = new Set([
+    campaign.ownerId,
+    campaign.ownerUID,
+    campaign.ownerUid,
+    campaign.createdBy,
+    campaign.createdById,
+    campaign.creatorId,
+    campaign.dungeonMasterId,
+    campaign.dmId,
+    campaign.dmUid,
+    ...(campaign.dungeonMasterIds || []),
+    ...(campaign.dmIds || []),
+  ].filter(Boolean));
+  const dmEmails = new Set([
+    campaign.ownerEmail,
+    campaign.createdByEmail,
+    campaign.dungeonMasterEmail,
+    campaign.dmEmail,
+    ...(campaign.dungeonMasterEmails || []),
+    ...(campaign.dmEmails || []),
+  ].map(normalizeEmail).filter(Boolean));
+  if (uid && dmIds.has(uid)) return true;
+  if (email && dmEmails.has(email)) return true;
+  return (campaign.invitedPlayers || []).some((player) => {
+    const playerId = player.id || player.uid || player.userId || "";
+    const playerEmail = normalizeEmail(player.email || "");
+    const playerRole = String(player.role || player.campaignRole || "").toLowerCase();
+    return (uid && playerId === uid || email && playerEmail === email) && (playerRole.includes("dungeon") || playerRole === "dm");
+  });
 }
 
 async function saveCampaign(campaign) {
@@ -326,13 +366,32 @@ async function saveCampaign(campaign) {
   }, { merge: true });
 }
 
-async function deleteCampaignById(id) {
+async function deleteCampaignById(id, campaign = null, user = null) {
   if (!id) return;
+  if (campaign && user && !userIsDungeonMaster(user, campaign)) {
+    throw new Error("Only the Dungeon Master can delete this campaign.");
+  }
   await enableNetwork(db).catch(() => {});
+  const campaignRef = doc(db, "campaigns", id);
+  const tombstone = {
+    archived: true,
+    deleted: true,
+    deletedAt: new Date().toISOString(),
+    deletedAtServer: serverTimestamp(),
+    deletedBy: user?.uid || "",
+    updatedAt: new Date().toISOString(),
+    updatedAtServer: serverTimestamp(),
+  };
   try {
-    await deleteDoc(doc(db, "campaigns", id));
-  } catch (error) {
-    await setDoc(doc(db, "campaigns", id), { archived: true, deletedAt: new Date().toISOString(), deletedAtServer: serverTimestamp() }, { merge: true });
+    await deleteDoc(campaignRef);
+    return;
+  } catch (deleteError) {
+    try {
+      await updateDoc(campaignRef, tombstone);
+      return;
+    } catch (updateError) {
+      await setDoc(campaignRef, { ...(campaign || {}), ...tombstone }, { merge: true });
+    }
   }
 }
 
@@ -872,7 +931,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
         try {
-          await deleteCampaignById(campaign.id);
+          await deleteCampaignById(campaign.id, campaign, user);
           if (activeCampaign?.id === campaign.id) setSelectedCampaignId(null);
         } catch (error) {
           Alert.alert("Delete Failed", error?.message || "Could not delete this campaign. Make sure you are the Dungeon Master and try again.");
@@ -912,7 +971,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
                 <Text style={styles.sessionText}>DM: {dm}</Text>
               </View>
               <View style={styles.badge}><Text style={styles.badgeText}>{activeCampaign?.id === c.id ? "Active" : "Linked"}</Text></View>
-              {userIsDungeonMaster(user, c) ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deleteCampaign(c)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
+              {userIsDungeonMaster(user, c) ? <TouchableOpacity style={styles.voteButtonMuted} onPress={(event) => { event?.stopPropagation?.(); deleteCampaign(c); }}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
             </Card>
           </TouchableOpacity>
         );
@@ -929,7 +988,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
         try {
-          await deleteCampaignById(activeCampaign.id);
+          await deleteCampaignById(activeCampaign.id, activeCampaign, user);
           setSelectedCampaignId?.(null);
           navigate("campaigns");
         } catch (error) {
