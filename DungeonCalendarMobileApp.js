@@ -156,7 +156,35 @@ function mergeCampaignTokenIntoPlayer(player = {}, campaign = {}) {
 }
 
 function normalizeList(values = []) {
-  return Array.isArray(values) ? values.filter(Boolean) : [];
+  if (!values) return [];
+  if (Array.isArray(values)) return values.filter(Boolean);
+  if (typeof values === "object") {
+    return Object.entries(values)
+      .filter(([, value]) => value !== false && value !== null && value !== undefined)
+      .map(([key, value]) => {
+        if (typeof value === "string") return value;
+        if (typeof value === "object") return value.uid || value.id || value.userId || value.email || key;
+        return key;
+      })
+      .filter(Boolean);
+  }
+  return [values].filter(Boolean);
+}
+
+function normalizePlayerList(values = []) {
+  if (!values) return [];
+  if (Array.isArray(values)) return values.filter(Boolean).map((value) => typeof value === "object" ? value : { id: value, uid: value });
+  if (typeof values === "object") {
+    return Object.entries(values).map(([key, value]) => {
+      if (value && typeof value === "object") return { id: value.id || value.uid || value.userId || key, uid: value.uid || value.id || value.userId || key, ...value };
+      return { id: key, uid: key, enabled: value };
+    }).filter((player) => player.enabled !== false);
+  }
+  return [];
+}
+
+function normalizeEmailList(values = []) {
+  return normalizeList(values).map(normalizeEmail).filter(Boolean);
 }
 
 function normalizeCampaign(campaign = {}) {
@@ -177,9 +205,23 @@ function normalizeCampaign(campaign = {}) {
     name: campaign.name || "Untitled Campaign",
     ownerId,
     dungeonMasterIds,
-    memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
-    invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
-    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
+    memberIds: Array.from(new Set([
+      ...normalizeList(campaign.memberIds),
+      ...normalizeList(campaign.playerIds),
+      ...normalizeList(campaign.members),
+      ...normalizeList(campaign.players),
+      ...normalizeList(campaign.userIds),
+    ].filter(Boolean))),
+    invitedEmails: Array.from(new Set([
+      ...normalizeEmailList(campaign.invitedEmails),
+      ...normalizeEmailList(campaign.playerEmails),
+      ...normalizeEmailList(campaign.memberEmails),
+    ].filter(Boolean))),
+    invitedPlayers: [
+      ...normalizePlayerList(campaign.invitedPlayers),
+      ...normalizePlayerList(campaign.players),
+      ...normalizePlayerList(campaign.members),
+    ],
     playerTokenImages: campaign.playerTokenImages || {},
     campaignTokenUrl: campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
     campaignImageUrl: campaign.campaignImageUrl || campaign.campaignTokenUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
@@ -206,13 +248,16 @@ function visibleToUser(campaign, user) {
   if (!user || campaign?.deletedAt || campaign?.archived === true) return false;
   const uid = user.uid;
   const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
-  return (
-    campaign.ownerId === uid ||
-    campaign.dungeonMasterIds?.includes(uid) ||
-    campaign.memberIds?.includes(uid) ||
-    campaign.invitedPlayers?.some((p) => p.id === uid || p.uid === uid || normalizeEmail(p.email) === email) ||
-    (!!email && campaign.invitedEmails?.includes(email))
-  );
+  const profileEmail = normalizeEmail(user.providerData?.[0]?.email || "");
+  const identities = new Set([uid, email, profileEmail].filter(Boolean));
+  const isDm = [campaign.ownerId, ...(campaign.dungeonMasterIds || [])].some((value) => identities.has(String(value || "").trim()) || normalizeEmail(value) === email);
+  const isMember = (campaign.memberIds || []).some((value) => identities.has(String(value || "").trim()) || normalizeEmail(value) === email);
+  const isInvitedPlayer = (campaign.invitedPlayers || []).some((p) => {
+    const playerIds = [p.id, p.uid, p.userId, p.firebaseUid, p.email].filter(Boolean);
+    return playerIds.some((value) => identities.has(String(value || "").trim()) || normalizeEmail(value) === email);
+  });
+  const isInvitedEmail = !!email && (campaign.invitedEmails || []).includes(email);
+  return isDm || isMember || isInvitedPlayer || isInvitedEmail;
 }
 
 function getFirebaseUserProfile(user, userProfile = null) {
@@ -1037,7 +1082,7 @@ function AvailabilityDateRow({ date, navigate, isDungeonMaster, onAvailable, onU
     </TouchableOpacity>
   );
 }
-function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, setCampaigns, isDungeonMaster, plan, user, userProfile }) {
+function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, setCampaigns, isDungeonMaster, plan, user, userProfile, userProfiles = {}, proposedDates = [] }) {
   const deleteCampaign = (campaign) => {
     if (!campaign || !userIsDungeonMaster(user, campaign)) return;
     Alert.alert("Delete Campaign", `Permanently delete ${campaign.name}? This removes it from Firebase and from all apps for every player. This cannot be undone.`, [
@@ -1089,7 +1134,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
             </Card>
           </TouchableOpacity>
         );
-      }) : <Card><Text style={styles.helperText}>No campaigns found for this Firebase account. Create one on the main app or accept an invite.</Text></Card>}
+      }) : <Card><Text style={styles.helperText}>No campaigns found for this Firebase account. Create one here, create one on the main app, or accept an invite using the same email address.</Text></Card>}
     </Screen>
   );
 }
