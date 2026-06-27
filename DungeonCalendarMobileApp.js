@@ -1089,6 +1089,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
         <SettingsRow label="Campaign Name" detail={activeCampaign.name} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Campaign Level" detail={activeCampaign.level || "Not set"} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Dungeon Master" detail={dmDisplay} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Campaign Settings" detail={isDungeonMaster ? "Edit campaign options" : "Player name and reminder options"} onPress={() => navigate("campaignSettings")} />
         <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign).length} linked`} onPress={() => navigate("players")} />
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
         {isDungeonMaster ? <TouchableOpacity style={styles.deleteAccountButton} onPress={deleteCurrent}><Text style={styles.deleteAccountText}>Delete Campaign</Text></TouchableOpacity> : null}
