@@ -16,8 +16,10 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
-import { auth, db, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
 import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import * as ImagePicker from "expo-image-picker";
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -1044,11 +1046,9 @@ function PrivacyPolicyMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Privacy Policy</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>Dungeon Calendar collects account, campaign, scheduling, and subscription information necessary to provide the service.</Text>
-      <Text style={styles.notesText}>We use this information to provide authentication, save campaigns, manage session dates, record player availability, process subscriptions, and support account features.</Text>
-      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Campaign, player, scheduling, and app data may be stored in Firebase services. Subscription processing is handled by Stripe.</Text>
-      <Text style={styles.notesText}>Dungeon Calendar does not sell personal information.</Text>
-      <Text style={styles.notesText}>You may update profile information in the app. For account deletion or privacy support, contact support@dungeoncalendar.com.</Text>
-      <Text style={styles.notesText}>Email: support@dungeoncalendar.com</Text>
+      <Text style={styles.notesText}>Authentication is provided through Firebase Authentication. Subscription processing is handled by Stripe.</Text>
+      <Text style={styles.notesText}>We do not sell personal information.</Text>
+      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
     </SimpleInfoPage>
   );
 }
@@ -1059,11 +1059,9 @@ function TermsOfServiceMobile({ openSettings }) {
       <Text style={styles.sectionTitle}>Terms of Service</Text>
       <Text style={styles.helperText}>Last Updated: June 2026</Text>
       <Text style={styles.notesText}>By using Dungeon Calendar, you agree to use the service lawfully and responsibly.</Text>
-      <Text style={styles.notesText}>Dungeon Calendar provides campaign scheduling, account, player invite, availability, and subscription tools for tabletop RPG groups.</Text>
-      <Text style={styles.notesText}>Users are responsible for the campaign content, player information, images, tokens, dates, and messages they create or share.</Text>
-      <Text style={styles.notesText}>Paid plans are processed through Stripe. Subscription features, prices, and billing intervals may change over time. Users are responsible for managing subscriptions according to the applicable Stripe checkout and billing terms.</Text>
-      <Text style={styles.notesText}>Do not misuse the service, interfere with other users, upload unlawful content, or attempt to access accounts or campaigns you are not authorized to use.</Text>
-      <Text style={styles.notesText}>For support or terms questions, contact support@dungeoncalendar.com.</Text>
+      <Text style={styles.notesText}>Subscriptions are managed through Stripe and may be modified or cancelled according to the applicable subscription terms.</Text>
+      <Text style={styles.notesText}>Users are responsible for campaign content they create and share.</Text>
+      <Text style={styles.notesText}>Support: dungeoncalendarsupport@gmail.com</Text>
     </SimpleInfoPage>
   );
 }
@@ -1258,6 +1256,7 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
 function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate }) {
   const [campaignTokenUrl, setCampaignTokenUrl] = useState(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
   const [playerTokenUrls, setPlayerTokenUrls] = useState({});
+  const [uploadingKey, setUploadingKey] = useState("");
   useEffect(() => {
     const initial = {};
     (activeCampaign?.invitedPlayers || []).forEach((p) => {
@@ -1267,6 +1266,40 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
     setPlayerTokenUrls(initial);
     setCampaignTokenUrl(activeCampaign?.tokenUrl || activeCampaign?.campaignTokenUrl || "");
   }, [activeCampaign?.id]);
+  const uploadTokenImage = async (targetKey, setter) => {
+    if (!activeCampaign || !isDungeonMaster) return;
+    if (!hasPlanFeature(plan, "tokenUploads")) {
+      navigate("plan");
+      return;
+    }
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Photo Permission Needed", "Allow photo access to upload token images.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        quality: 0.85,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      setUploadingKey(targetKey);
+      const uri = result.assets[0].uri;
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const ext = (uri.split(".").pop() || "jpg").split("?")[0].toLowerCase();
+      const safeExt = ["jpg", "jpeg", "png", "webp"].includes(ext) ? ext : "jpg";
+      const imageRef = ref(storage, `campaignTokens/${activeCampaign.id}/${targetKey}-${Date.now()}.${safeExt}`);
+      await uploadBytes(imageRef, blob, { contentType: `image/${safeExt === "jpg" ? "jpeg" : safeExt}` });
+      const url = await getDownloadURL(imageRef);
+      setter(url);
+    } catch (error) {
+      Alert.alert("Upload Failed", error?.message || "The token image could not be uploaded.");
+    } finally {
+      setUploadingKey("");
+    }
+  };
   const saveTokens = async () => {
     if (!activeCampaign || !isDungeonMaster) return;
     if (!hasPlanFeature(plan, "tokenUploads")) {
@@ -1278,7 +1311,7 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       return { ...p, tokenUrl: playerTokenUrls[key] || p.tokenUrl || "" };
     });
     await saveCampaign({ ...activeCampaign, tokenUrl: campaignTokenUrl, campaignTokenUrl, invitedPlayers });
-    Alert.alert("Tokens Saved", "Token image links are synced to the campaign in Firebase.");
+    Alert.alert("Tokens Saved", "Uploaded token images and token links are synced to Firebase.");
   };
   return (
     <Screen>
@@ -1292,12 +1325,26 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       ) : (
         <Card>
           <Text style={styles.sectionTitle}>Campaign Token</Text>
+          {campaignTokenUrl ? <Image source={{ uri: campaignTokenUrl }} style={styles.tokenPreview} /> : null}
+          <TouchableOpacity style={styles.primaryButton} onPress={() => uploadTokenImage("campaign", setCampaignTokenUrl)} disabled={uploadingKey === "campaign"}>
+            <Text style={styles.primaryButtonText}>{uploadingKey === "campaign" ? "Uploading..." : "Upload Campaign Token"}</Text>
+          </TouchableOpacity>
           <EditableField label="Campaign Token Image URL" value={campaignTokenUrl} onChangeText={setCampaignTokenUrl} />
-          <Text style={styles.helperText}>Paste the image URL used for this campaign token. It saves to the same Firebase campaign used by the web app.</Text>
+          <Text style={styles.helperText}>Upload an image from your device or paste a URL. The saved image URL is stored on the same Firebase campaign used by the web app.</Text>
           <Text style={styles.sectionTitle}>Player Tokens</Text>
           {activePlayers.map((player) => {
             const key = player.id || normalizeEmail(player.email);
-            return <EditableField key={key} label={`${player.name || player.email} Token URL`} value={playerTokenUrls[key] || player.tokenUrl || ""} onChangeText={(value) => setPlayerTokenUrls((current) => ({ ...current, [key]: value }))} />;
+            const currentUrl = playerTokenUrls[key] || player.tokenUrl || "";
+            return (
+              <View key={key} style={styles.tokenRow}>
+                <Text style={styles.cardTitle}>{player.name || player.email}</Text>
+                {currentUrl ? <Image source={{ uri: currentUrl }} style={styles.tokenPreview} /> : null}
+                <TouchableOpacity style={styles.outlineWideButton} onPress={() => uploadTokenImage(`player-${key}`, (url) => setPlayerTokenUrls((current) => ({ ...current, [key]: url })))} disabled={uploadingKey === `player-${key}`}>
+                  <Text style={styles.outlineButtonText}>{uploadingKey === `player-${key}` ? "Uploading..." : "Upload Player Token"}</Text>
+                </TouchableOpacity>
+                <EditableField label={`${player.name || player.email} Token URL`} value={currentUrl} onChangeText={(value) => setPlayerTokenUrls((current) => ({ ...current, [key]: value }))} />
+              </View>
+            );
           })}
           <TouchableOpacity style={styles.primaryButton} onPress={saveTokens}><Text style={styles.primaryButtonText}>Save Tokens</Text></TouchableOpacity>
         </Card>
