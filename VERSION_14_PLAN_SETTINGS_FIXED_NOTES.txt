@@ -8,7 +8,7 @@ Plan Settings now uses the same three plan names requested from the main app:
 Also preserved:
 - Calendar rule: DM proposes/selects available session dates; players respond to those proposed dates.
 - Removed Dice Settings and Backup & Sync.
-- Version remains versionCode 14 / versionName 1.0.14.
+- Version remains versionCode 15 / versionName 1.0.15.
 
 Main app plan references found during inspection:
 - No exact plan string lines found; used requested canonical plan names.

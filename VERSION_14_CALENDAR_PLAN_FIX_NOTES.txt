@@ -10,4 +10,4 @@ Fixed:
 - Removed Backup & Sync.
 - Log Out remains available.
 - Dashboard, Calendar, Campaigns, Results, Players, User Settings, and Plan Settings stay in the new mobile-native layout.
-- Version remains versionCode 14 / versionName 1.0.14.
+- Version remains versionCode 15 / versionName 1.0.15.

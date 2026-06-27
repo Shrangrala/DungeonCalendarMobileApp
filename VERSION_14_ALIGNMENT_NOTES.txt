@@ -17,7 +17,7 @@ Fixed:
 - Placeholder navigation replaced with mobile-native route changes.
 - Dashboard, Calendar, Campaigns, Results, Players, and Settings stay inside the new mobile layout.
 - App.js points directly to DungeonCalendarMobileApp.js.
-- Version set to versionCode 14 / versionName 1.0.14.
+- Version set to versionCode 15 / versionName 1.0.15.
 
 Important:
 This keeps the mobile UI separate, but it is structured to match the same app areas and Firebase-backed functions as the main app.

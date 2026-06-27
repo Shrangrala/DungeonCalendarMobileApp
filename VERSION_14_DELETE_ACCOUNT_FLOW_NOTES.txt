@@ -7,8 +7,8 @@ Added:
 - Warning text explaining that deletion is permanent and owned campaigns may need transfer/deletion first.
 
 Kept:
-- versionCode 14
-- versionName 1.0.14
+- versionCode 15
+- versionName 1.0.15
 - Free Plan, Adventurer Plan, Guildmaster Plan
 - Calendar behavior: DM proposes dates; players respond to those proposed dates.
 - Removed Dice Settings and Backup & Sync.
