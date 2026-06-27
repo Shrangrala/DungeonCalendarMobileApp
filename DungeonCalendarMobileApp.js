@@ -743,11 +743,11 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
             <Icon>▣</Icon>
             <Text style={styles.sectionTitle}>Upcoming Session</Text>
           </View>
-          {isDungeonMaster === true ? (
+          {isDungeonMaster ? (
             <TouchableOpacity style={styles.outlineButton} onPress={() => navigate("results") }>
               <Text style={styles.outlineButtonText}>View Results</Text>
             </TouchableOpacity>
-          ) : <View />}
+          ) : null}
         </View>
         {activeCampaign && nextDate ? (
           <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
@@ -782,7 +782,7 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <View style={styles.quickGrid}>
           <QuickAction icon="▣" label={isDungeonMaster ? "Propose Dates" : "Availability"} detail={isDungeonMaster ? "DM only" : "Your response"} onPress={() => navigate("calendar")} />
-          {isDungeonMaster === true ? <QuickAction icon="▥" label="View Results" detail="Compare dates" onPress={() => navigate("results")} /> : <View />}
+          {isDungeonMaster ? <QuickAction icon="▥" label="View Results" detail="Compare dates" onPress={() => navigate("results")} /> : null}
           <QuickAction icon="⚙" label="Campaigns" detail="Linked data" onPress={() => navigate("campaigns")} />
         </View>
       </Card>
@@ -2069,7 +2069,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
           </View>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.drawerScrollContent}>
 
-          {isDungeonMaster === true ? (
+          {isDungeonMaster ? (
             <Card>
               <Text style={styles.menuGroup}>Recent Results</Text>
               {proposedDates.map((d) => (
@@ -2086,7 +2086,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
                 <Text style={styles.chevron}>›</Text>
               </TouchableOpacity>
             </Card>
-          ) : <View />}
+          ) : null}
 
           <Card>
             <Text style={styles.menuGroup}>Settings</Text>
@@ -2433,7 +2433,7 @@ export default function DungeonCalendarMobileApp() {
         openDeleteAccount={() => setDeleteAccountOpen(true)}
         handleLogout={handleLogout}
         proposedDates={proposedDates}
-        isDungeonMaster={isDungeonMaster === true}
+        isDungeonMaster={isDungeonMaster}
       />
       <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
     </View>
