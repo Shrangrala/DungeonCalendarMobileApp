@@ -223,11 +223,11 @@ function getFirebaseUserProfile(user, userProfile = null) {
   return { displayName, email, avatar, phone };
 }
 
-function playerFromFirebaseUser(user, activeCampaignId = "") {
+function playerFromFirebaseUser(user, activeCampaignId = "", nameOverride = "") {
   const profile = getFirebaseUserProfile(user);
   return {
     id: user?.uid || "current-user",
-    name: profile.displayName,
+    name: nameOverride || profile.displayName,
     email: profile.email,
     role: "Player",
     campaignIds: activeCampaignId ? [activeCampaignId] : [],
@@ -262,7 +262,7 @@ function campaignPlayers(campaign, user) {
     const key = normalizeEmail(record.email) || record.id;
     byKey.set(key, { ...(byKey.get(key) || {}), ...record });
   };
-  if (user) add({ ...playerFromFirebaseUser(user, campaign.id), role: campaign.dungeonMasterIds?.includes(user.uid) ? "Dungeon Master" : "Player" });
+  if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), role: campaign.dungeonMasterIds?.includes(user.uid) ? "Dungeon Master" : "Player" });
   (campaign.invitedPlayers || []).forEach(add);
   (campaign.memberIds || []).forEach((id) => add({ id, name: id === user?.uid ? getFirebaseUserProfile(user).displayName : "Campaign Member" }));
   (campaign.invitedEmails || []).forEach((email) => add({ email, name: email, invitePending: true }));
@@ -1171,13 +1171,15 @@ function ProfileScreen({ navigate, openSettings, user, userProfile }) {
   );
 }
 
-function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMaster }) {
+function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile }) {
+  const currentCampaignPlayerName = campaignPlayerNameForUser(activeCampaign, user, userProfile);
   return (
     <Screen>
       <Header title="Campaign Settings" subtitle={activeCampaign?.name || "No campaign selected"} onSettings={openSettings} />
       <Card>
         {isDungeonMaster ? (
           <>
+            <SettingsRow label="Your Player Name" detail={currentCampaignPlayerName || "Set character/player name"} onPress={() => navigate("campaignPlayerName")} />
             <SettingsRow label="Campaign" detail={activeCampaign?.name || "None"} onPress={() => navigate("campaigns")} />
             <SettingsRow label="Default Session Duration" detail={`${activeCampaign?.sessionDuration || 4} hours`} onPress={() => navigate("campaignEditor")} />
             <SettingsRow label="Default Location" detail={activeCampaign?.defaultLocation || "Not set"} onPress={() => navigate("campaignEditor")} />
@@ -1189,7 +1191,8 @@ function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMas
         ) : (
           <>
             <Text style={styles.helperText}>Only the Dungeon Master can change campaign settings or choose the final session date.</Text>
-            <SettingsRow label="Reminder Settings" detail="Your session reminder preferences" onPress={() => navigate("notifications")} />
+            <SettingsRow label="Your Player Name" detail={currentCampaignPlayerName || "Set character/player name"} onPress={() => navigate("campaignPlayerName")} />
+            <SettingsRow label="Reminder Settings" detail="Your session reminder preferences" onPress={() => navigate("campaignEditor")} />
             <SettingsRow label="Campaign Role" detail="Player" onPress={() => navigate("campaignDetail")} />
           </>
         )}
@@ -1511,6 +1514,36 @@ function ProposeDateScreen({ openSettings, activeCampaign, isDungeonMaster, navi
         <Text style={styles.helperText}>Dates save to the same Firebase campaign document used by the web app.</Text>
         <EditableField label="Date (YYYY-MM-DD)" value={dateText} onChangeText={setDateText} />
         <TouchableOpacity style={styles.primaryButton} onPress={addDate}><Text style={styles.primaryButtonText}>Save Proposed Date</Text></TouchableOpacity>
+      </Card>
+    </Screen>
+  );
+}
+function CampaignPlayerNameSettings({ openSettings, activeCampaign, user, userProfile, navigate }) {
+  const [playerName, setPlayerName] = useState(campaignPlayerNameForUser(activeCampaign, user, userProfile));
+  useEffect(() => {
+    setPlayerName(campaignPlayerNameForUser(activeCampaign, user, userProfile));
+  }, [activeCampaign?.id, user?.uid]);
+  const save = async () => {
+    if (!activeCampaign?.id) {
+      Alert.alert("No Campaign", "Select a campaign before setting your player name.");
+      return;
+    }
+    try {
+      await saveCampaignPlayerName(activeCampaign, user, userProfile, playerName);
+      Alert.alert("Player Name Saved", "Your campaign player name was updated.");
+      navigate("campaignSettings");
+    } catch (error) {
+      Alert.alert("Save Failed", error?.message || "Could not save your player name.");
+    }
+  };
+  return (
+    <Screen>
+      <Header title="Campaign Player Name" subtitle={activeCampaign?.name || "Selected campaign"} onSettings={openSettings} />
+      <Card>
+        <Text style={styles.sectionTitle}>Your Player Name</Text>
+        <Text style={styles.helperText}>This is the name other players see for you in this campaign. Every user can set their own campaign player name.</Text>
+        <EditableField label="Campaign Player Name" value={playerName} onChangeText={setPlayerName} />
+        <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Player Name</Text></TouchableOpacity>
       </Card>
     </Screen>
   );
@@ -2220,6 +2253,8 @@ export default function DungeonCalendarMobileApp() {
         return <ProfileEditScreen {...props} />;
       case "campaignSettings":
         return <CampaignSettings {...props} />;
+      case "campaignPlayerName":
+        return <CampaignPlayerNameSettings {...props} />;
       case "notifications":
         return <Notifications {...props} />;
       case "privacy":
