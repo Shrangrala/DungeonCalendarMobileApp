@@ -17,6 +17,7 @@ import {
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signOut as firebaseSignOut } from "./firebase";
+import { updateProfile } from "firebase/auth";
 import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
@@ -204,11 +205,12 @@ function visibleToUser(campaign, user) {
   );
 }
 
-function getFirebaseUserProfile(user) {
-  const displayName = user?.displayName || user?.providerData?.[0]?.displayName || "Dungeon Calendar User";
-  const email = user?.email || user?.providerData?.[0]?.email || "No email connected";
-  const avatar = user?.photoURL || user?.providerData?.[0]?.photoURL || null;
-  return { displayName, email, avatar };
+function getFirebaseUserProfile(user, userProfile = null) {
+  const displayName = userProfile?.displayName || userProfile?.name || userProfile?.username || user?.displayName || user?.providerData?.[0]?.displayName || "Dungeon Calendar User";
+  const email = userProfile?.email || user?.email || user?.providerData?.[0]?.email || "No email connected";
+  const avatar = userProfile?.photoURL || userProfile?.avatar || user?.photoURL || user?.providerData?.[0]?.photoURL || null;
+  const phone = userProfile?.phone || userProfile?.phoneNumber || "";
+  return { displayName, email, avatar, phone };
 }
 
 function playerFromFirebaseUser(user, activeCampaignId = "") {
@@ -844,7 +846,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
       <Header title="Campaigns" subtitle="Only campaigns you created or joined" onSettings={openSettings} />
       <View style={styles.searchRow}>
         <Text style={styles.searchText}>Firebase-linked campaigns</Text>
-        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignNew"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
+        <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignNew"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity>
       </View>
       {campaigns.length ? campaigns.map((c) => {
         const dm = c.ownerId || c.dungeonMasterIds?.[0] || "DM";
@@ -860,7 +862,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
                 <Text style={styles.sessionText}>DM: {dm}</Text>
               </View>
               <View style={styles.badge}><Text style={styles.badgeText}>{activeCampaign?.id === c.id ? "Active" : "Linked"}</Text></View>
-              {isDungeonMaster ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deleteCampaign(c)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
+              {userIsDungeonMaster(user, c) ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deleteCampaign(c)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
             </Card>
           </TouchableOpacity>
         );
@@ -1040,8 +1042,8 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout,
   );
 }
 
-function ProfileScreen({ navigate, openSettings, user }) {
-  const profile = getFirebaseUserProfile(user);
+function ProfileScreen({ navigate, openSettings, user, userProfile }) {
+  const profile = getFirebaseUserProfile(user, userProfile);
   return (
     <Screen>
       <Header title="Profile" subtitle="Firebase Account" onSettings={openSettings} />
@@ -1053,6 +1055,7 @@ function ProfileScreen({ navigate, openSettings, user }) {
         )}
         <SettingsRow label="Display Name" detail={profile.displayName} onPress={() => navigate("profileEdit")} />
         <SettingsRow label="Email" detail={profile.email} onPress={() => navigate("profileEdit")} />
+        <SettingsRow label="Phone" detail={profile.phone || "Not set"} onPress={() => navigate("profileEdit")} />
         <SettingsRow label="Account ID" detail={user?.uid || "Signed in with Firebase"} onPress={() => navigate("profileEdit")} />
       </Card>
     </Screen>
@@ -1064,13 +1067,23 @@ function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMas
     <Screen>
       <Header title="Campaign Settings" subtitle={activeCampaign?.name || "No campaign selected"} onSettings={openSettings} />
       <Card>
-        <SettingsRow label="Campaign" detail={activeCampaign?.name || "None"} onPress={() => navigate("campaigns")} />
-        <SettingsRow label="Default Session Duration" detail={`${activeCampaign?.sessionDuration || 4} hours`} onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Default Location" detail={activeCampaign?.defaultLocation || "Not set"} onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Proposed Dates" detail={`${proposedDatesForCampaign(activeCampaign).length} date(s)`} onPress={() => navigate("calendar")} />
-        <SettingsRow label="Token Images" detail="Guildmaster campaign/player tokens" onPress={() => navigate("tokens")} />
-        <SettingsRow label="Calendar Links" detail="Google Calendar / Outlook export" onPress={() => navigate("session")} />
-        <SettingsRow label="Campaign Role" detail={isDungeonMaster ? "Dungeon Master" : "Player"} onPress={() => navigate("campaignDetail")} />
+        {isDungeonMaster ? (
+          <>
+            <SettingsRow label="Campaign" detail={activeCampaign?.name || "None"} onPress={() => navigate("campaigns")} />
+            <SettingsRow label="Default Session Duration" detail={`${activeCampaign?.sessionDuration || 4} hours`} onPress={() => navigate("campaignEditor")} />
+            <SettingsRow label="Default Location" detail={activeCampaign?.defaultLocation || "Not set"} onPress={() => navigate("campaignEditor")} />
+            <SettingsRow label="Proposed Dates" detail={`${proposedDatesForCampaign(activeCampaign).length} date(s)`} onPress={() => navigate("calendar")} />
+            <SettingsRow label="Token Images" detail="Guildmaster campaign/player tokens" onPress={() => navigate("tokens")} />
+            <SettingsRow label="Calendar Links" detail="Google Calendar / Outlook export" onPress={() => navigate("session")} />
+            <SettingsRow label="Campaign Role" detail="Dungeon Master" onPress={() => navigate("campaignDetail")} />
+          </>
+        ) : (
+          <>
+            <Text style={styles.helperText}>Only the Dungeon Master can change campaign settings or choose the final session date.</Text>
+            <SettingsRow label="Reminder Settings" detail="Your session reminder preferences" onPress={() => navigate("notifications")} />
+            <SettingsRow label="Campaign Role" detail="Player" onPress={() => navigate("campaignDetail")} />
+          </>
+        )}
       </Card>
     </Screen>
   );
@@ -1393,7 +1406,7 @@ function ProposeDateScreen({ openSettings, activeCampaign, isDungeonMaster, navi
     </Screen>
   );
 }
-function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
+function CampaignEditor({ openSettings, activeCampaign, user, navigate, isDungeonMaster }) {
   const [name, setName] = useState(activeCampaign?.name || "");
   const [level, setLevel] = useState(activeCampaign?.level || "");
   const [location, setLocation] = useState(activeCampaign?.defaultLocation || "");
@@ -1434,6 +1447,18 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
     });
     navigate("campaigns");
   };
+  if (activeCampaign && !isDungeonMaster) {
+    return (
+      <Screen>
+        <Header title="Campaign Settings" subtitle={activeCampaign.name || "Player access"} onSettings={openSettings} />
+        <Card>
+          <Text style={styles.sectionTitle}>Reminder Settings Only</Text>
+          <Text style={styles.helperText}>Only the Dungeon Master can edit campaign details. Players can change their own reminder settings.</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("notifications")}><Text style={styles.primaryButtonText}>Open Reminder Settings</Text></TouchableOpacity>
+        </Card>
+      </Screen>
+    );
+  }
   return (
     <Screen>
       <Header title={activeCampaign ? "Edit Campaign" : "Add Campaign"} subtitle={activeCampaign?.name || "New Firebase campaign"} onSettings={openSettings} />
@@ -1651,8 +1676,28 @@ function AvailabilityScreen({ openSettings, user, activeCampaign, proposedDates 
     </Screen>
   );
 }
-function ProfileEditScreen({ openSettings, user }) {
-  const profile = getFirebaseUserProfile(user);
+function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
+  const profile = getFirebaseUserProfile(user, userProfile);
+  const [displayName, setDisplayName] = useState(profile.displayName);
+  const [phone, setPhone] = useState(profile.phone || "");
+  useEffect(() => {
+    setDisplayName(profile.displayName);
+    setPhone(profile.phone || "");
+  }, [profile.displayName, profile.phone]);
+  const save = async () => {
+    const cleanName = String(displayName || "").trim() || "Dungeon Calendar User";
+    await updateProfile(auth.currentUser, { displayName: cleanName }).catch(() => {});
+    await saveUserSettings(user, {
+      displayName: cleanName,
+      name: cleanName,
+      email: profile.email,
+      phone: String(phone || "").trim(),
+      phoneNumber: String(phone || "").trim(),
+      photoURL: profile.avatar || "",
+    });
+    Alert.alert("Profile Saved", "Your profile information was saved to your Firebase user account.");
+    if (navigate) navigate("profile");
+  };
   return (
     <Screen>
       <Header title="Edit Profile" subtitle="Firebase account information" onSettings={openSettings} />
@@ -1662,11 +1707,12 @@ function ProfileEditScreen({ openSettings, user }) {
         ) : (
           <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
         )}
-        <EditableField label="Display Name" value={profile.displayName} />
+        <EditableField label="Display Name" value={displayName} onChangeText={setDisplayName} />
+        <EditableField label="Phone Number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
         <EditableField label="Email" value={profile.email} editable={false} />
         <EditableField label="Firebase UID" value={user?.uid || ""} editable={false} />
-        <Text style={styles.helperText}>Profile edits should be saved to the signed-in Firebase user record. Email and UID are shown from Firebase Auth and are not dummy data.</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={() => Alert.alert("Profile", "Your profile is linked to your Firebase account.")}>
+        <Text style={styles.helperText}>Profile edits save to the signed-in Firebase Auth profile and the matching users document used by the main app.</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={save}>
           <Text style={styles.primaryButtonText}>Save Profile</Text>
         </TouchableOpacity>
       </Card>
