@@ -1,0 +1,17 @@
+Dungeon Calendar Mobile Version 14 Delete Account Flow
+
+Added:
+- Delete Account button on User Settings/Profile area.
+- Delete Account option in the settings menu.
+- Confirmation modal requiring the user to type DELETE before the delete action is enabled.
+- Warning text explaining that deletion is permanent and owned campaigns may need transfer/deletion first.
+
+Kept:
+- versionCode 14
+- versionName 1.0.14
+- Free Plan, Adventurer Plan, Guildmaster Plan
+- Calendar behavior: DM proposes dates; players respond to those proposed dates.
+- Removed Dice Settings and Backup & Sync.
+
+Production note:
+The UI flow is included. The final destructive action should be wired to Firebase re-authentication, Firestore cleanup/ownership checks, and Firebase Auth account deletion before publishing.

@@ -1,0 +1,23 @@
+Dungeon Calendar Mobile Version 14
+
+Aligned mobile screens to the current main app areas:
+- Dashboard
+- Calendar
+- Campaigns
+- Results
+- Players
+- User Settings
+
+Removed:
+- Dice Settings
+- Backup & Sync
+
+Fixed:
+- Log Out option added to settings drawer and User Settings page.
+- Placeholder navigation replaced with mobile-native route changes.
+- Dashboard, Calendar, Campaigns, Results, Players, and Settings stay inside the new mobile layout.
+- App.js points directly to DungeonCalendarMobileApp.js.
+- Version set to versionCode 14 / versionName 1.0.14.
+
+Important:
+This keeps the mobile UI separate, but it is structured to match the same app areas and Firebase-backed functions as the main app.

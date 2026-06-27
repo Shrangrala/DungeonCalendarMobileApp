@@ -1,0 +1,13 @@
+Dungeon Calendar Mobile Version 14 Calendar + Plan Settings Fix
+
+Fixed:
+- Calendar now reflects the main app flow:
+  - DM proposes/selects session dates.
+  - Players can only mark availability on dates proposed by the DM.
+  - Results compare DM-proposed dates only.
+- Added Plan Settings to the mobile settings menu and User Settings page.
+- Removed Dice Settings.
+- Removed Backup & Sync.
+- Log Out remains available.
+- Dashboard, Calendar, Campaigns, Results, Players, User Settings, and Plan Settings stay in the new mobile-native layout.
+- Version remains versionCode 14 / versionName 1.0.14.
