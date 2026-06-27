@@ -1858,7 +1858,7 @@ function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
   };
   return (
     <Screen>
-      <Header title="Edit Profile" subtitle="Firebase account information" onSettings={openSettings} />
+      <Header title="Edit Profile" subtitle="Account information" onSettings={openSettings} />
       <Card>
         {profile.avatar ? (
           <Image source={{ uri: profile.avatar }} style={styles.profileLogo} resizeMode="cover" />
@@ -1868,8 +1868,7 @@ function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
         <EditableField label="Display Name" value={displayName} onChangeText={setDisplayName} />
         <EditableField label="Phone Number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
         <EditableField label="Email" value={profile.email} editable={false} />
-        <EditableField label="Firebase UID" value={user?.uid || ""} editable={false} />
-        <Text style={styles.helperText}>Profile edits save to the signed-in Firebase Auth profile and the matching users document used by the main app.</Text>
+        <Text style={styles.helperText}>Profile edits save to your signed-in account and sync with the main app.</Text>
         <TouchableOpacity style={styles.primaryButton} onPress={save}>
           <Text style={styles.primaryButtonText}>Save Profile</Text>
         </TouchableOpacity>
