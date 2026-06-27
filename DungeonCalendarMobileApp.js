@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
-import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
+import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut as firebaseSignOut } from "./firebase";
 import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
@@ -836,7 +836,7 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
       <Header title="Campaigns" subtitle="Only campaigns you created or joined" onSettings={openSettings} />
       <View style={styles.searchRow}>
         <Text style={styles.searchText}>Firebase-linked campaigns</Text>
-        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignEditor"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
+        {isDungeonMaster ? <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignNew"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity> : null}
       </View>
       {campaigns.length ? campaigns.map((c) => {
         const dm = c.ownerId || c.dungeonMasterIds?.[0] || "DM";
@@ -915,6 +915,7 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
             <View style={styles.playerInfo}>
               <Text style={styles.campaignTitle}>{p.name || p.email}</Text>
               <Text style={styles.sessionText}>{p.email || p.role}</Text>
+              {p.phone ? <Text style={styles.sessionText}>{p.phone}</Text> : null}
               <Text style={[styles.sessionAccent, { color: p.invitePending ? COLORS.gold : COLORS.green }]}>{p.invitePending ? "Invited" : (p.role || "Player")}</Text>
             </View>
             {isDungeonMaster ? <TouchableOpacity style={styles.voteButtonMuted} onPress={() => deletePlayer(p)}><Text style={styles.voteMutedText}>Delete</Text></TouchableOpacity> : null}
@@ -1347,14 +1348,14 @@ function AboutPage({ openSettings }) {
 }
 
 
-function EditableField({ label, value, editable = true, onChangeText }) {
+function EditableField({ label, value, editable = true, onChangeText, keyboardType = "default" }) {
   const [text, setText] = useState(value || "");
   useEffect(() => setText(value || ""), [value]);
   const handleChange = (next) => { setText(next); if (onChangeText) onChangeText(next); };
   return (
     <View style={styles.editableField}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput value={text} onChangeText={handleChange} editable={editable} selectTextOnFocus={editable} style={[styles.fieldInput, !editable && styles.fieldInputDisabled]} placeholderTextColor="#6b7280" />
+      <TextInput value={text} onChangeText={handleChange} editable={editable} selectTextOnFocus={editable} keyboardType={keyboardType} style={[styles.fieldInput, !editable && styles.fieldInputDisabled]} placeholderTextColor="#6b7280" />
     </View>
   );
 }
@@ -1388,10 +1389,41 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
   const [name, setName] = useState(activeCampaign?.name || "");
   const [level, setLevel] = useState(activeCampaign?.level || "");
   const [location, setLocation] = useState(activeCampaign?.defaultLocation || "");
+  const [sessionTime, setSessionTime] = useState(activeCampaign?.sessionTime || "18:00");
   const [duration, setDuration] = useState(String(activeCampaign?.sessionDuration || 4));
+  const [reminderValue, setReminderValue] = useState(String(activeCampaign?.reminderValue || activeCampaign?.reminderHours || 24));
+  const [reminderUnit, setReminderUnit] = useState(activeCampaign?.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
+  useEffect(() => {
+    setName(activeCampaign?.name || "");
+    setLevel(activeCampaign?.level || "");
+    setLocation(activeCampaign?.defaultLocation || "");
+    setSessionTime(activeCampaign?.sessionTime || "18:00");
+    setDuration(String(activeCampaign?.sessionDuration || 4));
+    setReminderValue(String(activeCampaign?.reminderValue || activeCampaign?.reminderHours || 24));
+    setReminderUnit(activeCampaign?.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
+  }, [activeCampaign?.id]);
+  const cleanTime = String(sessionTime || "18:00").trim();
+  const reminderNumber = Math.max(0, Number(reminderValue || 0));
+  const reminderHours = reminderUnit === "days" ? reminderNumber * 24 : reminderNumber;
   const save = async () => {
+    if (!/^\d{1,2}:\d{2}$/.test(cleanTime)) {
+      Alert.alert("Session Start Time", "Use 24-hour time like 18:00 or 19:30.");
+      return;
+    }
     const campaign = activeCampaign || normalizeCampaign({ ownerId: user?.uid, dungeonMasterIds: [user?.uid].filter(Boolean), memberIds: [user?.uid].filter(Boolean) });
-    await saveCampaign({ ...campaign, name: name || "Untitled Campaign", level, defaultLocation: location, sessionDuration: Number(duration || 4) });
+    await saveCampaign({
+      ...campaign,
+      name: name || "Untitled Campaign",
+      level,
+      defaultLocation: location,
+      sessionTime: cleanTime.padStart(5, "0"),
+      sessionDuration: Number(duration || 4),
+      reminderValue: reminderNumber,
+      reminderUnit,
+      reminderHours,
+      notificationReminderHours: reminderHours,
+      sessionReminderHours: reminderHours,
+    });
     navigate("campaigns");
   };
   return (
@@ -1401,7 +1433,14 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
         <EditableField label="Campaign Name" value={name} onChangeText={setName} />
         <EditableField label="Campaign Level" value={level} onChangeText={setLevel} />
         <EditableField label="Default Location" value={location} onChangeText={setLocation} />
-        <EditableField label="Default Duration" value={duration} onChangeText={setDuration} />
+        <EditableField label="Session Start Time (24-hour, HH:MM)" value={sessionTime} onChangeText={setSessionTime} keyboardType="numbers-and-punctuation" />
+        <EditableField label="Session Length (hours)" value={duration} onChangeText={setDuration} keyboardType="numeric" />
+        <EditableField label={`Reminder Before Session (${reminderUnit})`} value={reminderValue} onChangeText={setReminderValue} keyboardType="numeric" />
+        <View style={styles.rowWrap}>
+          <TouchableOpacity style={reminderUnit === "hours" ? styles.activePlanButton : styles.outlineButton} onPress={() => setReminderUnit("hours")}><Text style={reminderUnit === "hours" ? styles.activePlanText : styles.outlineButtonText}>Hours</Text></TouchableOpacity>
+          <TouchableOpacity style={reminderUnit === "days" ? styles.activePlanButton : styles.outlineButton} onPress={() => setReminderUnit("days")}><Text style={reminderUnit === "days" ? styles.activePlanText : styles.outlineButtonText}>Days</Text></TouchableOpacity>
+        </View>
+        <Text style={styles.helperText}>Saved to Firebase as campaign session settings. Reminder timing is stored in hours so notification and calendar logic can use the same value.</Text>
         <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Campaign</Text></TouchableOpacity>
       </Card>
     </Screen>
@@ -1410,10 +1449,11 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate }) {
 function PlayerEditor({ openSettings, activeCampaign, navigate }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [role, setRole] = useState("Player");
   const save = async () => {
     if (!activeCampaign) return;
-    const nextPlayer = campaignPlayerRecord({ name, email, role, invitePending: true }, activeCampaign.id);
+    const nextPlayer = campaignPlayerRecord({ name, email, phone, role, invitePending: true }, activeCampaign.id);
     await saveCampaign({
       ...activeCampaign,
       invitedPlayers: [...(activeCampaign.invitedPlayers || []), nextPlayer],
@@ -1427,6 +1467,7 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
       <Card>
         <EditableField label="Player Name" value={name} onChangeText={setName} />
         <EditableField label="Email" value={email} onChangeText={setEmail} />
+        <EditableField label="Phone Number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
         <EditableField label="Role" value={role} onChangeText={setRole} />
         <TouchableOpacity style={styles.primaryButton} onPress={save}><Text style={styles.primaryButtonText}>Save Player</Text></TouchableOpacity>
       </Card>
@@ -1887,24 +1928,21 @@ export default function DungeonCalendarMobileApp() {
     setAuthError("Email login screen should connect to the same Firebase Email/Password provider as the main app.");
   };
 
-  const handleLogout = () => {
-    Alert.alert("Log Out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log Out",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await signOut();
-            await GoogleSignin.signOut().catch(() => {});
-          } finally {
-            setSettingsOpen(false);
-            setUser(null);
-            setRoute("dashboard");
-          }
-        },
-      },
-    ]);
+  const handleLogout = async () => {
+    setSettingsOpen(false);
+    setDeleteAccountOpen(false);
+    setAuthError("");
+    try {
+      await GoogleSignin.signOut().catch(() => {});
+      await GoogleSignin.revokeAccess().catch(() => {});
+      await firebaseSignOut().catch(() => {});
+    } finally {
+      setCampaigns([]);
+      setUserProfile(null);
+      setSelectedCampaignId(null);
+      setUser(null);
+      setRoute("dashboard");
+    }
   };
 
   const activeCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) || campaigns[0] || null;
@@ -1944,6 +1982,8 @@ export default function DungeonCalendarMobileApp() {
         return <CampaignDetail {...props} />;
       case "campaignEditor":
         return <CampaignEditor {...props} />;
+      case "campaignNew":
+        return <CampaignEditor {...props} activeCampaign={null} />;
       case "proposeDate":
         return <ProposeDateScreen {...props} />;
       case "players":
@@ -1999,7 +2039,7 @@ export default function DungeonCalendarMobileApp() {
         handleLogout={handleLogout}
         proposedDates={proposedDates}
       />
-      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOut().catch(() => {}); await GoogleSignin.signOut().catch(() => {}); setUser(null); }} />
+      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await GoogleSignin.signOut().catch(() => {}); await GoogleSignin.revokeAccess().catch(() => {}); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
     </View>
   );
 }
@@ -2079,6 +2119,7 @@ const styles = StyleSheet.create({
   inlineTitle: { flexDirection: "row", alignItems: "center" },
   sectionTitle: { color: COLORS.white, fontSize: 18, fontWeight: "900" },
   helperText: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginBottom: 12 },
+  rowWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
   outlineButton: { borderWidth: 1, borderColor: COLORS.red, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   outlineWideButton: { borderWidth: 1, borderColor: COLORS.red, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   outlineButtonText: { color: "#ff5a52", fontSize: 12, fontWeight: "800" },
