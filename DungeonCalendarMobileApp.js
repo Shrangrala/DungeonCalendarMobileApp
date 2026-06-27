@@ -311,9 +311,9 @@ const planLimits = {
 };
 
 const planFeatures = {
-  free: { autoPick: false, calendarExport: false, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false },
-  adventurer: { autoPick: true, calendarExport: true, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false },
-  guildmaster: { autoPick: true, calendarExport: true, fullTracking: true, playerInvites: true, advancedManagement: true, tokenUploads: true },
+  free: { autoPick: false, calendarExport: false, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false, recurringSessions: false },
+  adventurer: { autoPick: true, calendarExport: true, fullTracking: false, playerInvites: true, advancedManagement: false, tokenUploads: false, recurringSessions: true },
+  guildmaster: { autoPick: true, calendarExport: true, fullTracking: true, playerInvites: true, advancedManagement: true, tokenUploads: true, recurringSessions: true },
 };
 
 const stripePaymentLinks = {
@@ -512,7 +512,7 @@ function DateBadge({ month, day, weekday }) {
 function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaign, activePlayers = [], proposedDates = [], isDungeonMaster, setSelectedCampaignId }) {
   const profile = getFirebaseUserProfile(user);
   const chosen = activeCampaign?.chosenDate && proposedDates.some((d) => d.key === activeCampaign.chosenDate) ? dateKeyToParts(activeCampaign.chosenDate) : null;
-  const nextDate = chosen || proposedDates[0] || null;
+  const nextDate = chosen || null;
   return (
     <Screen>
       <Header title="Welcome back," subtitle={profile.displayName} onSettings={openSettings} />
@@ -538,16 +538,16 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
         {activeCampaign && nextDate ? (
           <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
             <DateBadge month={nextDate.month} day={nextDate.day} weekday={nextDate.weekday} />
-            <View style={styles.sessionArt} />
+            <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.sessionArt} fallbackStyle={styles.sessionArt} />
             <View style={styles.sessionInfo}>
               <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
               <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
-              <Text style={styles.sessionAccent}>{nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+              <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
             </View>
             <Text style={styles.chevron}>›</Text>
           </TouchableOpacity>
         ) : (
-          <Text style={styles.helperText}>No session dates have been created for your linked campaigns yet.</Text>
+          <Text style={styles.helperText}>No upcoming session yet. Choose a final session date on the calendar first.</Text>
         )}
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate(activeCampaign ? "calendar" : "campaigns") }>
           <Text style={styles.primaryButtonText}>{activeCampaign ? "Open Calendar" : "Open Campaigns"}</Text>
@@ -774,7 +774,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
         <Card>
           <Text style={styles.sectionTitle}>Final Date & Recurring Sessions</Text>
           <Text style={styles.helperText}>{activeCampaign?.chosenDate ? dateKeyToParts(activeCampaign.chosenDate).full : "Choose a final date before generating recurring sessions."}</Text>
-          {hasPlanFeature(plan, "advancedManagement") ? (
+          {hasPlanFeature(plan, "recurringSessions") ? (
             <>
               <View style={styles.responseButtons}>
                 <TouchableOpacity style={[styles.voteButton, recurringCadence === "weekly" ? styles.voteSelected : null]} onPress={() => setRecurringCadence("weekly")}><Text style={styles.voteButtonText}>Weekly</Text></TouchableOpacity>
@@ -787,7 +787,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
               {(activeCampaign?.generatedSessionDates || []).length ? <Text style={styles.notesText}>Generated sessions: {(activeCampaign.generatedSessionDates || []).map((key) => dateKeyToParts(key).label).join(", ")}</Text> : null}
             </>
           ) : (
-            <TouchableOpacity style={styles.outlineWideButton} onPress={() => navigate("plan")}><Text style={styles.outlineButtonText}>Recurring sessions require Guildmaster</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.outlineWideButton} onPress={() => navigate("plan")}><Text style={styles.outlineButtonText}>Recurring sessions require Adventurer or Guildmaster</Text></TouchableOpacity>
           )}
         </Card>
       ) : null}
@@ -932,8 +932,24 @@ function Players({ navigate, openSettings, activePlayers = [], activeCampaign, i
     </Screen>
   );
 }
-function Results({ navigate, openSettings, activeCampaign, proposedDates = [], plan }) {
+function Results({ navigate, openSettings, activeCampaign, proposedDates = [], plan, isDungeonMaster }) {
   const best = [...proposedDates].sort((a, b) => (b.available - b.unavailable) - (a.available - a.unavailable))[0];
+  const canAutoPick = hasPlanFeature(plan, "autoPick");
+  const applyBestDate = async () => {
+    if (!activeCampaign || !best?.key) return;
+    if (!canAutoPick) { navigate("plan"); return; }
+    if (!isDungeonMaster) { Alert.alert("Dungeon Master Required", "Only a campaign DM can choose the final session date."); return; }
+    await saveCampaign({
+      ...activeCampaign,
+      chosenDate: best.key,
+      sessionDate: best.key,
+      selectedDate: best.key,
+      finalDate: best.key,
+      nextSessionDate: best.key,
+    });
+    Alert.alert("Best Date Chosen", `${best.full || best.label} is now the upcoming session.`);
+    navigate("dashboard");
+  };
   return (
     <Screen>
       <Header title="Results" subtitle={activeCampaign ? activeCampaign.name : "Compare proposed session dates"} onSettings={openSettings} />
@@ -952,14 +968,14 @@ function Results({ navigate, openSettings, activeCampaign, proposedDates = [], p
       </Card>
       <Card>
         <Text style={styles.sectionTitle}>Auto Pick Best Date</Text>
-        <Text style={styles.helperText}>{hasPlanFeature(plan, "autoPick") ? "The best date is chosen from proposed dates using player availability responses." : "Automatic best-date voting is included with Adventurer and Guildmaster plans."}</Text>
-        {best ? <TouchableOpacity style={hasPlanFeature(plan, "autoPick") ? styles.primaryButton : styles.outlineWideButton} onPress={() => hasPlanFeature(plan, "autoPick") ? navigate("session") : navigate("plan")}><Text style={hasPlanFeature(plan, "autoPick") ? styles.primaryButtonText : styles.outlineButtonText}>{hasPlanFeature(plan, "autoPick") ? `Best: ${best.full || best.label}` : "Upgrade Plan"}</Text></TouchableOpacity> : null}
+        <Text style={styles.helperText}>{canAutoPick ? "Adventurer and Guildmaster plans can automatically choose the date with the best availability score and save it as the final session date." : "Automatic best-date voting is included with Adventurer and Guildmaster plans."}</Text>
+        {best ? <TouchableOpacity style={canAutoPick ? styles.primaryButton : styles.outlineWideButton} onPress={applyBestDate}><Text style={canAutoPick ? styles.primaryButtonText : styles.outlineButtonText}>{canAutoPick ? `Choose Best Date: ${best.full || best.label}` : "Upgrade Plan"}</Text></TouchableOpacity> : null}
       </Card>
     </Screen>
   );
 }
 function SessionDetails({ navigate, openSettings, activeCampaign, proposedDates = [], activePlayers = [], plan }) {
-  const chosen = activeCampaign?.chosenDate ? proposedDates.find((d) => d.key === activeCampaign.chosenDate) : proposedDates[0];
+  const chosen = activeCampaign?.chosenDate ? proposedDates.find((d) => d.key === activeCampaign.chosenDate) : null;
   const calendarEvent = buildCalendarExportUrls(activeCampaign, chosen?.key);
   const canExport = hasPlanFeature(plan, "calendarExport");
   return (
