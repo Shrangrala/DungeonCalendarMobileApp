@@ -1156,7 +1156,7 @@ function ProfileScreen({ navigate, openSettings, user, userProfile }) {
   const profile = getFirebaseUserProfile(user, userProfile);
   return (
     <Screen>
-      <Header title="Profile" subtitle="Firebase Account" onSettings={openSettings} />
+      <Header title="Profile" subtitle="Account settings" onSettings={openSettings} />
       <Card>
         {profile.avatar ? (
           <Image source={{ uri: profile.avatar }} style={styles.profileLogo} resizeMode="cover" />
@@ -1166,7 +1166,6 @@ function ProfileScreen({ navigate, openSettings, user, userProfile }) {
         <SettingsRow label="Display Name" detail={profile.displayName} onPress={() => navigate("profileEdit")} />
         <SettingsRow label="Email" detail={profile.email} onPress={() => navigate("profileEdit")} />
         <SettingsRow label="Phone" detail={profile.phone || "Not set"} onPress={() => navigate("profileEdit")} />
-        <SettingsRow label="Account ID" detail={user?.uid || "Signed in with Firebase"} onPress={() => navigate("profileEdit")} />
       </Card>
     </Screen>
   );
