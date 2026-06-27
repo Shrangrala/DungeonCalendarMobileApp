@@ -1,45 +1,33 @@
-# Dungeon Calendar Mobile App - Clean Native Google Sign-In Build
+# Dungeon Calendar Mobile V12 Fresh
 
-This build keeps the Dungeon Calendar website look and features by loading `https://www.dungeoncalendar.com` in WebView, but it does **not** use Google OAuth inside the WebView.
+Fresh mobile-only React Native / Expo project for Dungeon Calendar.
 
-It adds a native Google sign-in screen first, then passes the Google ID token into the WebView and signs Firebase into the website origin.
+## Important
 
-## Before building
+- Package: `com.anonymous.dungeoncalendar`
+- Version: `1.0.12`
+- Android versionCode: `12`
+- Firebase project: `dungeon-calendar-app`
+- Google Web Client ID is already set in `App.js` from the current `google-services.json` client_type 3 entry.
+- Main web app files were intentionally removed.
+- Login/auth settings were preserved as native Google Sign-In + Firebase Auth.
 
-Open `App.js` and replace:
-
-```js
-PASTE\_YOUR\_GOOGLE\_WEB\_CLIENT\_ID\_HERE
-```
-
-with your Firebase/Google Cloud **Web application OAuth Client ID**.
-
-Do not use the Android client ID.
-
-## Install dependencies
+## Build
 
 From the project root:
 
 ```powershell
 npm install --legacy-peer-deps
-```
-
-## Build
-
-```powershell
 cd android
-.\\gradlew.bat bundleRelease
+.\gradlew.bat bundleRelease
 ```
 
 Upload:
 
 ```text
-android\\app\\build\\outputs\\bundle\\release\\app-release.aab
+android\app\build\outputs\bundle\release\app-release.aab
 ```
 
-## Version
+## Notes
 
-This package is set to Android `versionCode 11` and `versionName 1.0.11`.
-
-If Google Play says version code was already used, increase both `app.json` and `android/app/build.gradle` to the next number.
-
+The native screens match the provided dark red/black Dungeon Calendar style. WebView fallback buttons are included so existing web app functions remain reachable while native screens are expanded.
