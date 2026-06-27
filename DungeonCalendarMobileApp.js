@@ -193,7 +193,7 @@ function normalizeCampaign(campaign = {}) {
 }
 
 function visibleToUser(campaign, user) {
-  if (!user) return false;
+  if (!user || campaign?.deletedAt || campaign?.archived === true) return false;
   const uid = user.uid;
   const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
   return (
@@ -283,6 +283,34 @@ function proposedDatesForCampaign(campaign) {
   });
 }
 
+
+function campaignDungeonMasterDisplayName(campaign = {}, user = null, userProfile = null) {
+  const profile = getFirebaseUserProfile(user, userProfile);
+  const dmIds = new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean));
+  if (user?.uid && dmIds.has(user.uid)) return profile.displayName;
+  const invitedDm = (campaign.invitedPlayers || []).find((player) => {
+    const id = player.id || player.uid || "";
+    return id && dmIds.has(id);
+  });
+  return (
+    campaign.dmName ||
+    campaign.dungeonMasterName ||
+    campaign.ownerName ||
+    campaign.createdByName ||
+    invitedDm?.name ||
+    invitedDm?.displayName ||
+    "Dungeon Master"
+  );
+}
+
+function campaignUserReminder(campaign = {}, user = null) {
+  const settings = user?.uid ? campaign.userReminderSettings?.[user.uid] : null;
+  const hours = Number(settings?.reminderHours ?? settings?.notificationReminderHours ?? campaign.reminderHours ?? 24);
+  const unit = settings?.reminderUnit || (hours >= 24 && hours % 24 === 0 ? "days" : "hours");
+  const value = settings?.reminderValue ?? (unit === "days" ? hours / 24 : hours);
+  return { reminderValue: String(value || 0), reminderUnit: unit, reminderHours: hours };
+}
+
 function userIsDungeonMaster(user, campaign) {
   if (!user || !campaign) return false;
   return campaign.ownerId === user.uid || campaign.dungeonMasterIds?.includes(user.uid);
@@ -301,7 +329,11 @@ async function saveCampaign(campaign) {
 async function deleteCampaignById(id) {
   if (!id) return;
   await enableNetwork(db).catch(() => {});
-  await deleteDoc(doc(db, "campaigns", id));
+  try {
+    await deleteDoc(doc(db, "campaigns", id));
+  } catch (error) {
+    await setDoc(doc(db, "campaigns", id), { archived: true, deletedAt: new Date().toISOString(), deletedAtServer: serverTimestamp() }, { merge: true });
+  }
 }
 
 const planOrder = ["free", "adventurer", "guildmaster"];
@@ -833,12 +865,19 @@ function AvailabilityDateRow({ date, navigate, isDungeonMaster, onAvailable, onU
     </TouchableOpacity>
   );
 }
-function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster, plan, user }) {
+function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, setSelectedCampaignId, isDungeonMaster, plan, user, userProfile }) {
   const deleteCampaign = (campaign) => {
-    if (!campaign) return;
+    if (!campaign || !userIsDungeonMaster(user, campaign)) return;
     Alert.alert("Delete Campaign", `Delete ${campaign.name}? This also removes it from Firebase.`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => deleteCampaignById(campaign.id) },
+      { text: "Delete", style: "destructive", onPress: async () => {
+        try {
+          await deleteCampaignById(campaign.id);
+          if (activeCampaign?.id === campaign.id) setSelectedCampaignId(null);
+        } catch (error) {
+          Alert.alert("Delete Failed", error?.message || "Could not delete this campaign. Make sure you are the Dungeon Master and try again.");
+        }
+      } },
     ]);
   };
   return (
@@ -846,10 +885,21 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
       <Header title="Campaigns" subtitle="Only campaigns you created or joined" onSettings={openSettings} />
       <View style={styles.searchRow}>
         <Text style={styles.searchText}>Firebase-linked campaigns</Text>
-        <TouchableOpacity style={styles.smallRedButton} onPress={() => { const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length; const limit = planLimits[normalizePlan(plan)].campaigns; if (ownedCount >= limit) { Alert.alert("Plan Limit", `${planLimits[normalizePlan(plan)].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`); navigate("plan"); return; } navigate("campaignNew"); }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.smallRedButton} onPress={() => {
+          const normalizedPlan = normalizePlan(plan);
+          const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length;
+          const limit = planLimits[normalizedPlan].campaigns;
+          if (ownedCount >= limit) {
+            Alert.alert("Plan Limit", `${planLimits[normalizedPlan].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`);
+            navigate("plan");
+            return;
+          }
+          setSelectedCampaignId(null);
+          navigate("campaignNew");
+        }}><Text style={styles.smallRedButtonText}>+ Add Campaign</Text></TouchableOpacity>
       </View>
       {campaigns.length ? campaigns.map((c) => {
-        const dm = c.ownerId || c.dungeonMasterIds?.[0] || "DM";
+        const dm = campaignDungeonMasterDisplayName(c, user, userProfile);
         const next = c.chosenDate ? dateKeyToParts(c.chosenDate).full : (proposedDatesForCampaign(c)[0]?.full || "No date selected");
         return (
           <TouchableOpacity key={c.id} activeOpacity={0.86} onPress={() => { setSelectedCampaignId(c.id); navigate("campaignDetail"); }}>
@@ -870,12 +920,24 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
     </Screen>
   );
 }
-function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster }) {
+function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, setSelectedCampaignId }) {
   if (!activeCampaign) return <SimpleInfoPage title="Campaign Details" openSettings={openSettings}><Text style={styles.notesText}>No campaign is selected.</Text></SimpleInfoPage>;
-  const deleteCurrent = () => Alert.alert("Delete Campaign", `Delete ${activeCampaign.name}?`, [
-    { text: "Cancel", style: "cancel" },
-    { text: "Delete", style: "destructive", onPress: async () => { await deleteCampaignById(activeCampaign.id); navigate("campaigns"); } },
-  ]);
+  const dmDisplay = campaignDungeonMasterDisplayName(activeCampaign, user, userProfile);
+  const deleteCurrent = () => {
+    if (!userIsDungeonMaster(user, activeCampaign)) return;
+    Alert.alert("Delete Campaign", `Delete ${activeCampaign.name}?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: async () => {
+        try {
+          await deleteCampaignById(activeCampaign.id);
+          setSelectedCampaignId?.(null);
+          navigate("campaigns");
+        } catch (error) {
+          Alert.alert("Delete Failed", error?.message || "Could not delete this campaign. Make sure you are the Dungeon Master and try again.");
+        }
+      } },
+    ]);
+  };
   return (
     <Screen>
       <Header title="Campaign Details" subtitle={activeCampaign.name} onSettings={openSettings} />
@@ -883,7 +945,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
         <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.detailsHero} fallbackStyle={styles.detailsHero} />
         <SettingsRow label="Campaign Name" detail={activeCampaign.name} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Campaign Level" detail={activeCampaign.level || "Not set"} onPress={() => navigate("campaignEditor")} />
-        <SettingsRow label="Dungeon Masters" detail={(activeCampaign.dungeonMasterIds || []).length ? `${activeCampaign.dungeonMasterIds.length} DM(s)` : "Not set"} onPress={() => navigate("campaignEditor")} />
+        <SettingsRow label="Dungeon Master" detail={dmDisplay} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign).length} linked`} onPress={() => navigate("players")} />
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
         {isDungeonMaster ? <TouchableOpacity style={styles.deleteAccountButton} onPress={deleteCurrent}><Text style={styles.deleteAccountText}>Delete Campaign</Text></TouchableOpacity> : null}
@@ -1406,36 +1468,62 @@ function ProposeDateScreen({ openSettings, activeCampaign, isDungeonMaster, navi
     </Screen>
   );
 }
-function CampaignEditor({ openSettings, activeCampaign, user, navigate, isDungeonMaster }) {
+function CampaignEditor({ openSettings, activeCampaign, user, navigate, isDungeonMaster, setSelectedCampaignId, campaigns = [], plan }) {
   const [name, setName] = useState(activeCampaign?.name || "");
   const [level, setLevel] = useState(activeCampaign?.level || "");
   const [location, setLocation] = useState(activeCampaign?.defaultLocation || "");
   const [sessionTime, setSessionTime] = useState(activeCampaign?.sessionTime || "18:00");
   const [duration, setDuration] = useState(String(activeCampaign?.sessionDuration || 4));
-  const [reminderValue, setReminderValue] = useState(String(activeCampaign?.reminderValue || activeCampaign?.reminderHours || 24));
-  const [reminderUnit, setReminderUnit] = useState(activeCampaign?.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
+  const initialReminder = campaignUserReminder(activeCampaign, user);
+  const [reminderValue, setReminderValue] = useState(String(activeCampaign?.reminderValue || initialReminder.reminderValue || activeCampaign?.reminderHours || 24));
+  const [reminderUnit, setReminderUnit] = useState(activeCampaign?.reminderUnit || initialReminder.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
   useEffect(() => {
     setName(activeCampaign?.name || "");
     setLevel(activeCampaign?.level || "");
     setLocation(activeCampaign?.defaultLocation || "");
     setSessionTime(activeCampaign?.sessionTime || "18:00");
     setDuration(String(activeCampaign?.sessionDuration || 4));
-    setReminderValue(String(activeCampaign?.reminderValue || activeCampaign?.reminderHours || 24));
-    setReminderUnit(activeCampaign?.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
+    const nextReminder = campaignUserReminder(activeCampaign, user);
+    setReminderValue(String(activeCampaign?.reminderValue || nextReminder.reminderValue || activeCampaign?.reminderHours || 24));
+    setReminderUnit(activeCampaign?.reminderUnit || nextReminder.reminderUnit || (Number(activeCampaign?.reminderHours || 24) >= 24 ? "days" : "hours"));
   }, [activeCampaign?.id]);
   const cleanTime = String(sessionTime || "18:00").trim();
   const reminderNumber = Math.max(0, Number(reminderValue || 0));
   const reminderHours = reminderUnit === "days" ? reminderNumber * 24 : reminderNumber;
   const save = async () => {
+    if (!user?.uid) {
+      Alert.alert("Login Required", "Sign in before creating a campaign.");
+      return;
+    }
     if (!/^\d{1,2}:\d{2}$/.test(cleanTime)) {
       Alert.alert("Session Start Time", "Use 24-hour time like 18:00 or 19:30.");
       return;
     }
-    const campaign = activeCampaign || normalizeCampaign({ ownerId: user?.uid, dungeonMasterIds: [user?.uid].filter(Boolean), memberIds: [user?.uid].filter(Boolean) });
-    await saveCampaign({
-      ...campaign,
+    const isNewCampaign = !activeCampaign?.id;
+    const baseCampaign = isNewCampaign
+      ? normalizeCampaign({
+          id: makeId("campaign"),
+          ownerId: user.uid,
+          createdBy: user.uid,
+          dungeonMasterIds: [user.uid],
+          memberIds: [user.uid],
+          invitedEmails: [],
+          invitedPlayers: [],
+          availability: {},
+          unavailable: {},
+          chosenDate: "",
+        })
+      : activeCampaign;
+    const dmIds = Array.from(new Set([...(baseCampaign.dungeonMasterIds || []), ...(isNewCampaign ? [user.uid] : [])].filter(Boolean)));
+    const memberIds = Array.from(new Set([...(baseCampaign.memberIds || []), ...(isNewCampaign ? [user.uid] : [])].filter(Boolean)));
+    const campaignToSave = {
+      ...baseCampaign,
       name: name || "Untitled Campaign",
       level,
+      ownerId: baseCampaign.ownerId || user.uid,
+      createdBy: baseCampaign.createdBy || user.uid,
+      dungeonMasterIds: dmIds,
+      memberIds,
       defaultLocation: location,
       sessionTime: cleanTime.padStart(5, "0"),
       sessionDuration: Number(duration || 4),
@@ -1444,17 +1532,40 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate, isDungeo
       reminderHours,
       notificationReminderHours: reminderHours,
       sessionReminderHours: reminderHours,
-    });
-    navigate("campaigns");
+    };
+    await saveCampaign(campaignToSave);
+    setSelectedCampaignId?.(campaignToSave.id);
+    navigate(isNewCampaign ? "campaignDetail" : "campaigns");
   };
   if (activeCampaign && !isDungeonMaster) {
+    const saveReminderOnly = async () => {
+      if (!user?.uid) return;
+      await saveCampaign({
+        ...activeCampaign,
+        userReminderSettings: {
+          ...(activeCampaign.userReminderSettings || {}),
+          [user.uid]: {
+            reminderValue: reminderNumber,
+            reminderUnit,
+            reminderHours,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      });
+      Alert.alert("Reminder Saved", `You will be reminded ${reminderNumber} ${reminderUnit} before this campaign session.`);
+    };
     return (
       <Screen>
-        <Header title="Campaign Settings" subtitle={activeCampaign.name || "Player access"} onSettings={openSettings} />
+        <Header title="Campaign Reminder" subtitle={activeCampaign.name || "Player reminder"} onSettings={openSettings} />
         <Card>
-          <Text style={styles.sectionTitle}>Reminder Settings Only</Text>
-          <Text style={styles.helperText}>Only the Dungeon Master can edit campaign details. Players can change their own reminder settings.</Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("notifications")}><Text style={styles.primaryButtonText}>Open Reminder Settings</Text></TouchableOpacity>
+          <Text style={styles.sectionTitle}>Your Campaign Reminder</Text>
+          <Text style={styles.helperText}>Only the Dungeon Master can edit campaign settings. You can set when you want reminders for this campaign.</Text>
+          <EditableField label={`Reminder Before Session (${reminderUnit})`} value={reminderValue} onChangeText={setReminderValue} keyboardType="numeric" />
+          <View style={styles.rowWrap}>
+            <TouchableOpacity style={reminderUnit === "hours" ? styles.activePlanButton : styles.outlineButton} onPress={() => setReminderUnit("hours")}><Text style={reminderUnit === "hours" ? styles.activePlanText : styles.outlineButtonText}>Hours</Text></TouchableOpacity>
+            <TouchableOpacity style={reminderUnit === "days" ? styles.activePlanButton : styles.outlineButton} onPress={() => setReminderUnit("days")}><Text style={reminderUnit === "days" ? styles.activePlanText : styles.outlineButtonText}>Days</Text></TouchableOpacity>
+          </View>
+          <TouchableOpacity style={styles.primaryButton} onPress={saveReminderOnly}><Text style={styles.primaryButtonText}>Save Reminder</Text></TouchableOpacity>
         </Card>
       </Screen>
     );
