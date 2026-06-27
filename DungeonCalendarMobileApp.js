@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { auth, db, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
-import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, snapshotsInSync } from "firebase/firestore";
+import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -1243,7 +1243,7 @@ export default function DungeonCalendarMobileApp() {
     enableNetwork(db).catch((error) => {
       console.warn("Could not force Firestore network on:", error);
     });
-    unsubscribeSync = snapshotsInSync(db, () => {
+    unsubscribeSync = onSnapshotsInSync(db, () => {
       setSyncStatus("live");
     });
     const unsubscribe = onSnapshot(collection(db, "campaigns"), { includeMetadataChanges: true }, (snapshot) => {
