@@ -801,7 +801,54 @@ async function deleteCampaignById(id, campaign = null, user = null) {
 const planOrder = ["free", "adventurer", "guildmaster"];
 
 function normalizePlan(planId = "free") {
-  return planOrder.includes(planId) ? planId : "free";
+  const value = String(planId || "free").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["guildmaster", "guild", "guildmasterplan", "guildplan"].includes(value)) return "guildmaster";
+  if (["adventurer", "adventure", "adventurerplan", "adventureplan"].includes(value)) return "adventurer";
+  return "free";
+}
+
+function readProfilePlan(profile = {}, fallback = "free") {
+  return normalizePlan(profile.plan ?? profile.Plan ?? profile.planStatus ?? profile.PlanStatus ?? profile.subscriptionPlan ?? profile.SubscriptionPlan ?? profile.membershipPlan ?? profile.MembershipPlan ?? profile.accountPlan ?? profile.AccountPlan ?? profile.tier ?? profile.Tier ?? fallback);
+}
+
+function readProfileBillingInterval(profile = {}, fallback = "monthly") {
+  return normalizeBillingInterval(profile.billingInterval ?? profile.BillingInterval ?? profile.billing_period ?? profile.billingPeriod ?? profile.interval ?? profile.Interval ?? fallback);
+}
+
+function readBillingStatusActive(profile = {}) {
+  const status = String(profile.subscriptionStatus ?? profile.SubscriptionStatus ?? profile.stripeSubscriptionStatus ?? profile.StripeSubscriptionStatus ?? profile.status ?? profile.Status ?? "").trim().toLowerCase();
+  return profile.active === true || profile.Active === true || ["active", "trialing", "paid", "current", "past_due"].includes(status);
+}
+
+function inferPlanFromStripeText(text = "", fallback = "free") {
+  const lower = String(text || "").toLowerCase();
+  if (lower.includes("guildmaster") || lower.includes("guild master") || lower.includes("guild")) return "guildmaster";
+  if (lower.includes("adventurer") || lower.includes("adventure")) return "adventurer";
+  return normalizePlan(fallback);
+}
+
+function inferPlanFromStripeSubscription(subscription = {}, fallback = "free") {
+  const status = String(subscription.status || subscription.stripeSubscriptionStatus || subscription.subscriptionStatus || "").toLowerCase();
+  if (status && !["active", "trialing", "past_due", "paid", "current"].includes(status)) return "free";
+  const items = Array.isArray(subscription.items) ? subscription.items : Array.isArray(subscription.items?.data) ? subscription.items.data : [];
+  const textParts = [subscription.plan, subscription.Plan, subscription.planStatus, subscription.subscriptionPlan, subscription.role, subscription.productName, subscription.product, subscription.priceId, subscription.productId, subscription.price?.nickname, subscription.price?.lookup_key, subscription.price?.id, subscription.price?.metadata?.plan, subscription.product?.name, subscription.product?.description, subscription.product?.metadata?.plan];
+  for (const item of items) {
+    const price = item?.price || item?.plan || item;
+    const product = price?.product || item?.product || {};
+    textParts.push(price?.nickname, price?.lookup_key, price?.id, price?.metadata?.plan, typeof product === "string" ? product : product?.name, typeof product === "string" ? "" : product?.description, typeof product === "string" ? "" : product?.metadata?.plan);
+    const amount = Number(price?.unit_amount || price?.amount || 0);
+    if ([499, 4999].includes(amount) || amount >= 4900) return "guildmaster";
+    if ([299, 2999].includes(amount)) return "adventurer";
+  }
+  const byText = inferPlanFromStripeText(textParts.filter(Boolean).join(" "), fallback);
+  if (byText !== "free") return byText;
+  return readProfilePlan(subscription, fallback);
+}
+
+function inferBillingIntervalFromStripeSubscription(subscription = {}, fallback = "monthly") {
+  const items = Array.isArray(subscription.items) ? subscription.items : Array.isArray(subscription.items?.data) ? subscription.items.data : [];
+  const firstPrice = items[0]?.price || items[0]?.plan || items[0] || subscription.price || {};
+  return normalizeBillingInterval(firstPrice?.recurring?.interval || subscription.interval || subscription.billingInterval || subscription.BillingInterval || fallback);
 }
 
 function normalizeBillingInterval(interval = "monthly") {
@@ -2595,12 +2642,70 @@ export default function DungeonCalendarMobileApp() {
     enableNetwork(db).catch((error) => {
       console.warn("Could not force Firestore network on:", error);
     });
+    let latestProfile = null;
+    let latestCustomer = {};
+    let latestSubscription = {};
+
+    const applyLivePlanProfile = (mirrorToProfile = false) => {
+      const subscriptionPlan = latestSubscription && Object.keys(latestSubscription).length ? inferPlanFromStripeSubscription(latestSubscription, "free") : "free";
+      const customerPlan = readProfilePlan(latestCustomer, readProfilePlan(latestProfile || {}, "free"));
+      const nextPlan = subscriptionPlan !== "free" ? subscriptionPlan : customerPlan;
+      const nextBillingInterval = subscriptionPlan !== "free"
+        ? inferBillingIntervalFromStripeSubscription(latestSubscription, readProfileBillingInterval(latestCustomer, readProfileBillingInterval(latestProfile || {}, "monthly")))
+        : readProfileBillingInterval(latestCustomer, readProfileBillingInterval(latestProfile || {}, "monthly"));
+      const active = nextPlan !== "free" || readBillingStatusActive(latestSubscription) || readBillingStatusActive(latestCustomer) || readBillingStatusActive(latestProfile || {});
+      const mergedProfile = {
+        ...(latestProfile || {}),
+        plan: active ? normalizePlan(nextPlan) : "free",
+        billingInterval: normalizeBillingInterval(nextBillingInterval),
+        stripeSubscriptionStatus: latestSubscription.status || latestSubscription.stripeSubscriptionStatus || latestCustomer.stripeSubscriptionStatus || latestCustomer.subscriptionStatus || latestProfile?.stripeSubscriptionStatus || "",
+        stripeSubscriptionId: latestSubscription.id || latestSubscription.subscriptionId || latestCustomer.stripeSubscriptionId || latestCustomer.subscriptionId || latestProfile?.stripeSubscriptionId || "",
+        stripeCustomerId: latestCustomer.stripeCustomerId || latestCustomer.customerId || latestCustomer.stripeId || latestProfile?.stripeCustomerId || "",
+      };
+      setUserProfile(mergedProfile);
+      const profileChanged =
+        readProfilePlan(latestProfile || {}, "free") !== mergedProfile.plan ||
+        readProfileBillingInterval(latestProfile || {}, "monthly") !== mergedProfile.billingInterval ||
+        String(latestProfile?.stripeSubscriptionStatus || "") !== String(mergedProfile.stripeSubscriptionStatus || "") ||
+        String(latestProfile?.stripeSubscriptionId || "") !== String(mergedProfile.stripeSubscriptionId || "") ||
+        String(latestProfile?.stripeCustomerId || "") !== String(mergedProfile.stripeCustomerId || "");
+      if (mirrorToProfile && profileChanged) {
+        setDoc(userProfileDocRef(user), {
+          id: canonicalUserProfileDocId(user),
+          uid: user.uid,
+          firebaseUid: user.uid,
+          email: normalizeEmail(user.email || mergedProfile.email || ""),
+          plan: mergedProfile.plan,
+          billingInterval: mergedProfile.billingInterval,
+          stripeSubscriptionStatus: mergedProfile.stripeSubscriptionStatus || "",
+          stripeSubscriptionId: mergedProfile.stripeSubscriptionId || "",
+          stripeCustomerId: mergedProfile.stripeCustomerId || "",
+          updatedAt: new Date().toISOString(),
+          updatedAtServer: serverTimestamp(),
+        }, { merge: true }).catch((error) => console.warn("Could not mirror live mobile plan to user profile:", error));
+      }
+    };
+
     const unsubscribeProfile = onSnapshot(userProfileDocRef(user), { includeMetadataChanges: true }, (snap) => {
-      setUserProfile(snap.exists() ? snap.data() : null);
+      latestProfile = snap.exists() ? snap.data() : null;
+      applyLivePlanProfile(false);
     }, (error) => {
       console.warn("Mobile profile sync failed:", error);
       setUserProfile(null);
     });
+    const unsubscribeCustomer = onSnapshot(doc(db, "customers", user.uid), { includeMetadataChanges: true }, (snap) => {
+      latestCustomer = snap.exists() ? (snap.data() || {}) : {};
+      applyLivePlanProfile(true);
+    }, (error) => console.warn("Mobile customer plan sync failed:", error));
+    const unsubscribeSubscriptions = onSnapshot(collection(db, "customers", user.uid, "subscriptions"), { includeMetadataChanges: true }, (snapshot) => {
+      latestSubscription = {};
+      snapshot.docs.forEach((subSnap) => {
+        const data = { id: subSnap.id, ...(subSnap.data() || {}) };
+        const subPlan = inferPlanFromStripeSubscription(data, "free");
+        if ((readBillingStatusActive(data) || subPlan !== "free") && subPlan !== "free") latestSubscription = data;
+      });
+      applyLivePlanProfile(true);
+    }, (error) => console.warn("Mobile subscription plan sync failed:", error));
     const unsubscribeUserProfiles = onSnapshot(collection(db, "users"), { includeMetadataChanges: true }, (snapshot) => {
       const profileMap = {};
       snapshot.docs.forEach((item) => {
@@ -2646,6 +2751,8 @@ export default function DungeonCalendarMobileApp() {
     return () => {
       unsubscribe();
       unsubscribeProfile();
+      unsubscribeCustomer();
+      unsubscribeSubscriptions();
       unsubscribeUserProfiles();
       unsubscribeSync();
     };
@@ -2719,8 +2826,8 @@ export default function DungeonCalendarMobileApp() {
   const activePlayers = campaignPlayers(activeCampaign, user, userProfiles);
   const proposedDates = proposedDatesForCampaign(activeCampaign);
   const isDungeonMaster = userIsDungeonMaster(user, activeCampaign);
-  const plan = normalizePlan(userProfile?.plan || "free");
-  const billingInterval = normalizeBillingInterval(userProfile?.billingInterval || "monthly");
+  const plan = readProfilePlan(userProfile || {}, "free");
+  const billingInterval = readProfileBillingInterval(userProfile || {}, "monthly");
 
   const props = {
     navigate,
