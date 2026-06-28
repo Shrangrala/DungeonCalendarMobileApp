@@ -234,6 +234,7 @@ function getFirebaseUserProfile(user, userProfile = null) {
 
 
 function publicProfileDisplayName(profile = {}) {
+  profile = profile || {};
   return (
     profile.displayName ||
     profile.name ||
@@ -476,7 +477,7 @@ function proposedDatesForCampaign(campaign) {
 function campaignDungeonMasterDisplayName(campaign = {}, user = null, userProfile = null, userProfiles = {}) {
   const profile = getFirebaseUserProfile(user, userProfile);
   const dmIds = Array.from(new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean)));
-  if (user?.uid && dmIds.includes(user.uid)) return profile.displayName;
+  if (user?.uid && dmIds.includes(user.uid)) return profile?.displayName || profile?.name || profile?.username || user?.email || "Dungeon Master";
 
   for (const id of dmIds) {
     const matchedProfile = userProfiles?.[id];
