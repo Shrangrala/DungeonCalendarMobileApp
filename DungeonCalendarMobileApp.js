@@ -361,32 +361,70 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
   }, { merge: true });
 }
 
-function campaignPlayers(campaign, user) {
+function campaignPlayers(campaign, user, userProfiles = {}) {
   if (!campaign) return user ? [playerFromFirebaseUser(user)] : [];
   const byKey = new Map();
+
+  const displayNameFromProfile = (idOrEmail = "") => {
+    const key = String(idOrEmail || "");
+    const profile = userProfiles?.[key] || userProfiles?.[normalizeEmail(key)] || null;
+    return publicProfileDisplayName(profile) || profile?.email || "";
+  };
+
+  const isPlaceholderOnly = (record = {}) => {
+    const name = String(record.name || record.displayName || record.username || "").trim().toLowerCase();
+    const email = normalizeEmail(record.email || record.userEmail || record.inviteEmail || "");
+    const id = String(record.id || record.uid || record.userId || record.playerId || record.memberId || "").trim();
+    const phone = String(record.phone || "").trim();
+    const hasRealName = name && !["campaign member", "player", "member"].includes(name);
+    const hasVisibleIdentity = Boolean(email || phone || hasRealName);
+    // Bare UID-only membership records are useful for permission checks, but they should not create fake rows.
+    return !hasVisibleIdentity && !(user?.uid && id === user.uid) && !displayNameFromProfile(id);
+  };
+
   const add = (player = {}) => {
     const record = mergeCampaignTokenIntoPlayer(campaignPlayerRecord(player, campaign.id), campaign);
-    const key = normalizeEmail(record.email) || record.id || record.__memberKey || record.uid || record.userId || record.playerId;
+    const id = record.id || record.uid || record.userId || record.playerId || record.memberId || record.__memberKey || "";
+    const profileName = displayNameFromProfile(id) || displayNameFromProfile(record.email);
+    const normalized = {
+      ...record,
+      name: profileName || record.name || record.displayName || record.username || (record.email ? record.email : "Campaign Member"),
+      email: record.email || record.userEmail || record.inviteEmail || (user?.uid && id === user.uid ? user.email : ""),
+    };
+    if (isPlaceholderOnly(normalized)) return;
+    const key = normalizeEmail(normalized.email) || normalized.id || normalized.__memberKey || normalized.uid || normalized.userId || normalized.playerId || `${normalized.__sourceField || "member"}-${normalized.__sourceIndex ?? ""}`;
     if (!key) return;
-    byKey.set(key, { ...(byKey.get(key) || {}), ...record });
+    byKey.set(key, { ...(byKey.get(key) || {}), ...normalized });
   };
+
   const addCollection = (field, value, defaults = {}) => {
     if (Array.isArray(value)) {
       value.forEach((item, index) => {
         if (typeof item === "string") {
-          add({ ...defaults, id: item, __memberKey: item, __sourceField: field, __sourceIndex: index, email: item.includes("@") ? item : "", name: item.includes("@") ? item : defaults.name || "Campaign Member" });
+          const text = item.trim();
+          const email = text.includes("@") ? text : "";
+          const profileName = displayNameFromProfile(text);
+          // Do not show fake UID-only rows unless the profile can be resolved.
+          if (!email && !profileName && !(user?.uid && text === user.uid)) return;
+          add({ ...defaults, id: text, uid: text, __memberKey: text, __sourceField: field, __sourceIndex: index, email, name: email || profileName || defaults.name || "Campaign Member" });
         } else if (item && typeof item === "object") {
-          const itemId = item.id || item.uid || item.userId || item.playerId || item.memberId || item.email || item.userEmail || item.inviteEmail || String(index);
+          const itemId = item.id || item.uid || item.userId || item.playerId || item.memberId || item.email || item.userEmail || item.inviteEmail || `${field}_${index}`;
           add({ ...defaults, __memberKey: itemId, __sourceField: field, __sourceIndex: index, ...item });
         }
       });
     } else if (value && typeof value === "object") {
       Object.entries(value).forEach(([key, item]) => {
-        if (item && typeof item === "object") add({ ...defaults, id: key, __memberKey: key, __sourceField: field, ...item });
-        else add({ ...defaults, id: key, __memberKey: key, __sourceField: field, email: key.includes("@") ? key : "", name: key.includes("@") ? key : defaults.name || "Campaign Member" });
+        if (item && typeof item === "object") add({ ...defaults, id: key, uid: key, __memberKey: key, __sourceField: field, ...item });
+        else {
+          const email = key.includes("@") ? key : "";
+          const profileName = displayNameFromProfile(key);
+          if (!email && !profileName && !(user?.uid && key === user.uid)) return;
+          add({ ...defaults, id: key, uid: key, __memberKey: key, __sourceField: field, email, name: email || profileName || defaults.name || "Campaign Member" });
+        }
       });
     }
   };
+
   if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), __memberKey: user.uid || user.email, role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
   addCollection("invitedPlayers", campaign.invitedPlayers, { invitePending: true });
   addCollection("players", campaign.players, { invitePending: false });
@@ -527,6 +565,7 @@ function playerTargetKeys(target = {}) {
     normalizeEmail(target.userEmail || ""),
     normalizeEmail(target.inviteEmail || ""),
     String(target.phone || "").trim(),
+    target.__sourceField && target.__sourceIndex !== undefined ? `${target.__sourceField}:${target.__sourceIndex}` : "",
   ].filter(Boolean).map((value) => String(value).trim()));
 }
 
@@ -544,6 +583,7 @@ function playerMatchesDeletionTarget(item = {}, target = {}, itemKey = "") {
     normalizeEmail(item.userEmail || ""),
     normalizeEmail(item.inviteEmail || ""),
     String(item.phone || "").trim(),
+    item.__sourceField && item.__sourceIndex !== undefined ? `${item.__sourceField}:${item.__sourceIndex}` : "",
   ].filter(Boolean).map((value) => String(value).trim()));
   for (const key of keys) {
     if (values.has(key)) return true;
@@ -555,12 +595,14 @@ function playerMatchesDeletionTarget(item = {}, target = {}, itemKey = "") {
 function removePlayerFromArray(values = [], target = {}) {
   if (!Array.isArray(values)) return [];
   const keys = playerTargetKeys(target);
-  return values.filter((item) => {
+  return values.filter((item, index) => {
+    const sourceKey = target.__sourceField && target.__sourceIndex !== undefined ? `${target.__sourceField}:${target.__sourceIndex}` : "";
+    if (sourceKey && keys.has(sourceKey) && Number(target.__sourceIndex) === index) return false;
     if (typeof item === "string") {
       const text = item.trim();
       return !keys.has(text) && !keys.has(normalizeEmail(text));
     }
-    if (item && typeof item === "object") return !playerMatchesDeletionTarget(item, target);
+    if (item && typeof item === "object") return !playerMatchesDeletionTarget({ ...item, __sourceField: target.__sourceField, __sourceIndex: index }, target);
     return true;
   });
 }
@@ -1245,7 +1287,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
         <SettingsRow label="Campaign Level" detail={activeCampaign.level || "Not set"} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Dungeon Master" detail={dmDisplay} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Campaign Settings" detail={isDungeonMaster ? "Edit campaign options" : "Player name and reminder options"} onPress={() => navigate("campaignSettings")} />
-        <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign).length} linked`} onPress={() => navigate("players")} />
+        <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign, user, userProfiles).length} linked`} onPress={() => navigate("players")} />
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
         {isDungeonMaster ? <TouchableOpacity style={styles.deleteAccountButton} onPress={deleteCurrent}><Text style={styles.deleteAccountText}>Delete Campaign</Text></TouchableOpacity> : null}
       </Card>
@@ -2437,6 +2479,9 @@ export default function DungeonCalendarMobileApp() {
         result = await signInToFirebaseWithGooglePopup();
       } else {
         await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+        // Clear any cached Google account so Android shows the account chooser instead of silently reusing the last account.
+        await GoogleSignin.signOut().catch(() => {});
+        await GoogleSignin.revokeAccess().catch(() => {});
         const signInResult = await GoogleSignin.signIn();
         const idToken = signInResult?.data?.idToken || signInResult?.idToken;
         if (!idToken) throw new Error("Google Sign-In did not return an ID token.");
@@ -2475,7 +2520,7 @@ export default function DungeonCalendarMobileApp() {
   };
 
   const activeCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) || campaigns[0] || null;
-  const activePlayers = campaignPlayers(activeCampaign, user);
+  const activePlayers = campaignPlayers(activeCampaign, user, userProfiles);
   const proposedDates = proposedDatesForCampaign(activeCampaign);
   const isDungeonMaster = userIsDungeonMaster(user, activeCampaign);
   const plan = normalizePlan(userProfile?.plan || "free");
