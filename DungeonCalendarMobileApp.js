@@ -451,16 +451,19 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
 
 function proposedDatesForCampaign(campaign) {
   if (!campaign) return [];
+  const finalKey = campaign.chosenDate || campaign.finalDate || campaign.sessionDate || campaign.selectedDate || campaign.nextSessionDate || "";
   const dmIds = new Set([campaign.ownerId, ...(campaign.dungeonMasterIds || [])].filter(Boolean));
   const dmProposedFromAvailability = Object.entries(campaign.availability || {})
     .filter(([, ids]) => Array.isArray(ids) && ids.some((id) => dmIds.has(id)))
     .map(([key]) => key);
   const manual = new Set(campaign.manuallySelectedDates || []);
-  const keys = Array.from(new Set([
-    ...manual,
-    ...dmProposedFromAvailability,
-    campaign.chosenDate && (manual.has(campaign.chosenDate) || dmProposedFromAvailability.includes(campaign.chosenDate)) ? campaign.chosenDate : "",
-  ].filter(Boolean))).sort();
+  const baseKeys = finalKey
+    ? [finalKey]
+    : [
+        ...manual,
+        ...dmProposedFromAvailability,
+      ];
+  const keys = Array.from(new Set(baseKeys.filter(Boolean))).sort();
   return keys.map((key) => {
     const parts = dateKeyToParts(key);
     return {
@@ -468,7 +471,7 @@ function proposedDatesForCampaign(campaign) {
       ...parts,
       available: (campaign.availability?.[key] || []).length,
       unavailable: (campaign.unavailable?.[key] || []).length,
-      status: campaign.chosenDate === key ? "selected" : "proposed",
+      status: finalKey === key ? "selected" : "proposed",
     };
   });
 }
@@ -980,10 +983,12 @@ function DateBadge({ month, day, weekday }) {
   );
 }
 
-function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaign, activePlayers = [], proposedDates = [], isDungeonMaster, setSelectedCampaignId }) {
+function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaign, activePlayers = [], proposedDates = [], isDungeonMaster, setSelectedCampaignId, plan }) {
   const profile = getFirebaseUserProfile(user);
   const chosen = activeCampaign?.chosenDate && proposedDates.some((d) => d.key === activeCampaign.chosenDate) ? dateKeyToParts(activeCampaign.chosenDate) : null;
   const nextDate = chosen || null;
+  const calendarEvent = buildCalendarExportUrls(activeCampaign, nextDate?.key);
+  const canExport = hasPlanFeature(plan, "calendarExport");
   return (
     <Screen>
       <Header title="Welcome back," subtitle={profile.displayName} onSettings={openSettings} />
@@ -1009,16 +1014,24 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
           ) : null}
         </View>
         {activeCampaign && nextDate ? (
-          <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
-            <DateBadge month={nextDate.month} day={nextDate.day} weekday={nextDate.weekday} />
-            <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.sessionArt} fallbackStyle={styles.sessionArt} />
-            <View style={styles.sessionInfo}>
-              <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
-              <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
-              <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity style={styles.sessionRow} onPress={() => navigate("session")} activeOpacity={0.85}>
+              <DateBadge month={nextDate.month} day={nextDate.day} weekday={nextDate.weekday} />
+              <ImageOrFallback uri={campaignImageUrl(activeCampaign)} imageStyle={styles.sessionArt} fallbackStyle={styles.sessionArt} />
+              <View style={styles.sessionInfo}>
+                <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
+                <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
+                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+              </View>
+              <Text style={styles.chevron}>›</Text>
+            </TouchableOpacity>
+            {canExport && calendarEvent ? (
+              <View style={styles.responseButtons}>
+                <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL(calendarEvent.googleUrl)}><Text style={styles.outlineButtonText}>Add to Google Calendar</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL(calendarEvent.outlookUrl)}><Text style={styles.outlineButtonText}>Add to Outlook Calendar</Text></TouchableOpacity>
+              </View>
+            ) : null}
+          </>
         ) : (
           <Text style={styles.helperText}>No upcoming session yet. Choose a final session date on the calendar first.</Text>
         )}
@@ -1074,7 +1087,7 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
   const first = new Date(year, month, 1);
   const start = new Date(year, month, 1 - first.getDay());
   const selectedKeys = new Set(proposedDates.map((d) => d.key));
-  const chosenKey = proposedDates.find((d) => d.status === "selected")?.key;
+  const chosenKey = activeCampaign?.chosenDate || activeCampaign?.finalDate || proposedDates.find((d) => d.status === "selected")?.key;
   const currentUserId = user?.uid || "";
   const cells = Array.from({ length: 35 }, (_, i) => {
     const date = new Date(start);
@@ -1118,9 +1131,10 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
               style={[
                 styles.dayCell,
                 compact ? styles.dayCellCompact : null,
-                selected ? styles.selectedDay : proposed ? styles.proposedDay : null,
+                proposed ? styles.proposedDay : null,
                 cell.availableByUser ? styles.availableDay : null,
                 cell.unavailableByUser ? styles.unavailableDay : null,
+                selected ? styles.selectedDay : null,
                 disabled ? styles.disabledDay : null,
               ]}
             >
@@ -1203,7 +1217,20 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
   const setChosen = async (dateKey) => {
     if (!activeCampaign || !isDungeonMaster) return;
     const next = activeCampaign.chosenDate === dateKey ? "" : dateKey;
-    await saveCampaign({ ...activeCampaign, chosenDate: next, sessionDate: next, selectedDate: next, finalDate: next, nextSessionDate: next });
+    const nextAvailability = next && activeCampaign.availability?.[next] ? { [next]: activeCampaign.availability[next] } : {};
+    const nextUnavailable = next && activeCampaign.unavailable?.[next] ? { [next]: activeCampaign.unavailable[next] } : {};
+    await saveCampaign({
+      ...activeCampaign,
+      availability: next ? nextAvailability : (activeCampaign.availability || {}),
+      unavailable: next ? nextUnavailable : (activeCampaign.unavailable || {}),
+      manuallySelectedDates: next ? [next] : (activeCampaign.manuallySelectedDates || []),
+      generatedSessionDates: next ? [] : (activeCampaign.generatedSessionDates || []),
+      chosenDate: next,
+      sessionDate: next,
+      selectedDate: next,
+      finalDate: next,
+      nextSessionDate: next,
+    });
   };
   const generateRecurring = async () => {
     if (!activeCampaign || !isDungeonMaster) return;
@@ -1481,6 +1508,10 @@ function Results({ navigate, openSettings, activeCampaign, proposedDates = [], p
     if (!isDungeonMaster) { Alert.alert("Dungeon Master Required", "Only a campaign DM can choose the final session date."); return; }
     await saveCampaign({
       ...activeCampaign,
+      availability: activeCampaign.availability?.[best.key] ? { [best.key]: activeCampaign.availability[best.key] } : {},
+      unavailable: activeCampaign.unavailable?.[best.key] ? { [best.key]: activeCampaign.unavailable[best.key] } : {},
+      manuallySelectedDates: [best.key],
+      generatedSessionDates: [],
       chosenDate: best.key,
       sessionDate: best.key,
       selectedDate: best.key,
@@ -2851,7 +2882,7 @@ const styles = StyleSheet.create({
   dayCellCompact: { height: 28 },
   dayNum: { color: COLORS.white, fontSize: 15 },
   dayNumCompact: { fontSize: 13 },
-  selectedDay: { backgroundColor: COLORS.redDark },
+  selectedDay: { backgroundColor: COLORS.gold, borderWidth: 1, borderColor: COLORS.gold },
   proposedDay: { borderWidth: 1, borderColor: COLORS.blue },
   availableDay: { backgroundColor: "rgba(34, 197, 94, 0.28)", borderWidth: 1, borderColor: COLORS.green },
   unavailableDay: { backgroundColor: "rgba(220, 38, 38, 0.26)", borderWidth: 1, borderColor: COLORS.red },
