@@ -15,12 +15,21 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signOut as firebaseSignOut } from "./firebase";
 import { updateProfile } from "firebase/auth";
-import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
+import { collection, deleteDoc, deleteField, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
+
+const nativeGoogleSignIn = Platform.OS !== "web" ? require("@react-native-google-signin/google-signin") : null;
+const GoogleSignin = nativeGoogleSignIn?.GoogleSignin || {
+  configure: () => {},
+  hasPlayServices: async () => true,
+  signOut: async () => {},
+  revokeAccess: async () => {},
+  signIn: async () => { throw new Error("Native Google Sign-In is not available on web."); },
+};
+const statusCodes = nativeGoogleSignIn?.statusCodes || { SIGN_IN_CANCELLED: "SIGN_IN_CANCELLED" };
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -377,9 +386,10 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
     const id = String(record.id || record.uid || record.userId || record.playerId || record.memberId || "").trim();
     const phone = String(record.phone || "").trim();
     const hasRealName = name && !["campaign member", "player", "member"].includes(name);
-    const hasVisibleIdentity = Boolean(email || phone || hasRealName);
-    // Bare UID-only membership records are useful for permission checks, but they should not create fake rows.
-    return !hasVisibleIdentity && !(user?.uid && id === user.uid) && !displayNameFromProfile(id);
+    const profileName = displayNameFromProfile(id) || displayNameFromProfile(email);
+    const looksLikeGeneratedPlaceholder = !email && !phone && !hasRealName && !profileName;
+    // Bare UID-only or placeholder-only membership records are useful for permission checks, but they should not create fake rows.
+    return looksLikeGeneratedPlaceholder && !(user?.uid && id === user.uid);
   };
 
   const add = (player = {}) => {
@@ -638,9 +648,11 @@ function campaignWithRemovedPlayer(campaign = {}, player = {}) {
 async function deleteCampaignPlayer(campaign = {}, player = {}, user = null) {
   if (!campaign?.id) throw new Error("Missing campaign.");
   if (!userIsDungeonMaster(user, campaign)) throw new Error("Only the Dungeon Master can remove campaign players.");
-  const targetId = player.id || player.uid || player.userId || player.playerId || player.memberId || "";
+  const targetId = player.id || player.uid || player.userId || player.playerId || player.memberId || player.__memberKey || "";
   const targetEmail = normalizeEmail(player.email || player.userEmail || player.inviteEmail || "");
-  if (!targetId && !targetEmail) throw new Error("Missing player id or email.");
+  const sourceField = player.__sourceField || "";
+  const sourceIndex = player.__sourceIndex;
+  if (!targetId && !targetEmail && !sourceField) throw new Error("Missing player id or email.");
   if (targetId && user?.uid && targetId === user.uid) throw new Error("The Dungeon Master cannot remove themselves here. Delete the campaign instead.");
 
   const nextCampaign = campaignWithRemovedPlayer(campaign, player);
@@ -648,12 +660,35 @@ async function deleteCampaignPlayer(campaign = {}, player = {}, user = null) {
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   };
-  ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "invites", "pendingInvites", "playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser", "userProfiles", "playerProfiles", "memberProfiles"].forEach((field) => {
+  const memberFields = ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "invites", "pendingInvites"];
+  const mapFields = ["playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser", "userProfiles", "playerProfiles", "memberProfiles"];
+  [...memberFields, ...mapFields].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(nextCampaign, field)) updatePayload[field] = nextCampaign[field];
+  });
+
+  // Remove keyed map entries too. This handles members stored as object maps keyed by UID/email.
+  [targetId, targetEmail, player.__memberKey].filter(Boolean).forEach((key) => {
+    memberFields.forEach((field) => {
+      if (campaign[field] && !Array.isArray(campaign[field]) && typeof campaign[field] === "object" && Object.prototype.hasOwnProperty.call(campaign[field], key)) {
+        updatePayload[`${field}.${key}`] = deleteField();
+      }
+    });
+    mapFields.forEach((field) => {
+      if (campaign[field] && typeof campaign[field] === "object" && Object.prototype.hasOwnProperty.call(campaign[field], key)) {
+        updatePayload[`${field}.${key}`] = deleteField();
+      }
+    });
   });
 
   await enableNetwork(db).catch(() => {});
   await updateDoc(doc(db, "campaigns", campaign.id), updatePayload);
+
+  // Verify against the local computed state. If nothing changed, surface a real error instead of silently doing nothing.
+  const before = JSON.stringify(memberFields.map((field) => campaign[field] ?? null));
+  const after = JSON.stringify(memberFields.map((field) => nextCampaign[field] ?? null));
+  if (before === after && sourceField && sourceIndex === undefined && !targetEmail) {
+    throw new Error("Could not identify the selected player record to remove. Refresh campaigns and try again.");
+  }
 }
 
 async function deleteCampaignById(id, campaign = null, user = null) {
@@ -2435,7 +2470,11 @@ export default function DungeonCalendarMobileApp() {
       setSyncStatus("live");
     });
     const unsubscribe = onSnapshot(collection(db, "campaigns"), { includeMetadataChanges: true }, (snapshot) => {
-      setSyncStatus(snapshot.metadata.fromCache ? "cache" : "live");
+      if (snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) {
+        setSyncStatus("cache");
+        return;
+      }
+      setSyncStatus("live");
       const visibleCampaigns = snapshot.docs
         .map((item) => normalizeCampaign({ id: item.id, ...item.data() }))
         .filter((campaign) => visibleToUser(campaign, user))
