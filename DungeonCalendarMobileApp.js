@@ -366,33 +366,37 @@ function campaignPlayers(campaign, user) {
   const byKey = new Map();
   const add = (player = {}) => {
     const record = mergeCampaignTokenIntoPlayer(campaignPlayerRecord(player, campaign.id), campaign);
-    const key = normalizeEmail(record.email) || record.id;
+    const key = normalizeEmail(record.email) || record.id || record.__memberKey || record.uid || record.userId || record.playerId;
     if (!key) return;
     byKey.set(key, { ...(byKey.get(key) || {}), ...record });
   };
-  const addCollection = (value, defaults = {}) => {
+  const addCollection = (field, value, defaults = {}) => {
     if (Array.isArray(value)) {
-      value.forEach((item) => {
-        if (typeof item === "string") add({ ...defaults, id: item, email: item.includes("@") ? item : "", name: item.includes("@") ? item : defaults.name || "Campaign Member" });
-        else if (item && typeof item === "object") add({ ...defaults, ...item });
+      value.forEach((item, index) => {
+        if (typeof item === "string") {
+          add({ ...defaults, id: item, __memberKey: item, __sourceField: field, __sourceIndex: index, email: item.includes("@") ? item : "", name: item.includes("@") ? item : defaults.name || "Campaign Member" });
+        } else if (item && typeof item === "object") {
+          const itemId = item.id || item.uid || item.userId || item.playerId || item.memberId || item.email || item.userEmail || item.inviteEmail || String(index);
+          add({ ...defaults, __memberKey: itemId, __sourceField: field, __sourceIndex: index, ...item });
+        }
       });
     } else if (value && typeof value === "object") {
       Object.entries(value).forEach(([key, item]) => {
-        if (item && typeof item === "object") add({ ...defaults, id: key, ...item });
-        else add({ ...defaults, id: key, email: key.includes("@") ? key : "", name: key.includes("@") ? key : defaults.name || "Campaign Member" });
+        if (item && typeof item === "object") add({ ...defaults, id: key, __memberKey: key, __sourceField: field, ...item });
+        else add({ ...defaults, id: key, __memberKey: key, __sourceField: field, email: key.includes("@") ? key : "", name: key.includes("@") ? key : defaults.name || "Campaign Member" });
       });
     }
   };
-  if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
-  addCollection(campaign.invitedPlayers, { invitePending: true });
-  addCollection(campaign.players, { invitePending: false });
-  addCollection(campaign.members, { invitePending: false, name: "Campaign Member" });
-  addCollection(campaign.memberIds, { invitePending: false, name: "Campaign Member" });
-  addCollection(campaign.playerIds, { invitePending: false, name: "Campaign Member" });
-  addCollection(campaign.participants, { invitePending: false, name: "Campaign Member" });
-  addCollection(campaign.participantIds, { invitePending: false, name: "Campaign Member" });
-  addCollection(campaign.invitedEmails, { invitePending: true });
-  addCollection(campaign.playerEmails, { invitePending: false });
+  if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), __memberKey: user.uid || user.email, role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
+  addCollection("invitedPlayers", campaign.invitedPlayers, { invitePending: true });
+  addCollection("players", campaign.players, { invitePending: false });
+  addCollection("members", campaign.members, { invitePending: false, name: "Campaign Member" });
+  addCollection("memberIds", campaign.memberIds, { invitePending: false, name: "Campaign Member" });
+  addCollection("playerIds", campaign.playerIds, { invitePending: false, name: "Campaign Member" });
+  addCollection("participants", campaign.participants, { invitePending: false, name: "Campaign Member" });
+  addCollection("participantIds", campaign.participantIds, { invitePending: false, name: "Campaign Member" });
+  addCollection("invitedEmails", campaign.invitedEmails, { invitePending: true });
+  addCollection("playerEmails", campaign.playerEmails, { invitePending: false });
   return Array.from(byKey.values());
 }
 
@@ -513,6 +517,7 @@ async function saveCampaign(campaign) {
 
 function playerTargetKeys(target = {}) {
   return new Set([
+    target.__memberKey,
     target.id,
     target.uid,
     target.userId,
@@ -577,10 +582,10 @@ function campaignWithRemovedPlayer(campaign = {}, player = {}) {
   const targetId = player.id || player.uid || player.userId || player.playerId || player.memberId || "";
   const targetEmail = normalizeEmail(player.email || player.userEmail || player.inviteEmail || "");
   const next = { ...campaign };
-  ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants"].forEach((field) => {
+  ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "invites", "pendingInvites"].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(campaign, field)) next[field] = removePlayerFromCollection(campaign[field], player);
   });
-  ["playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser"].forEach((field) => {
+  ["playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser", "userProfiles", "playerProfiles", "memberProfiles"].forEach((field) => {
     if (!campaign[field] || typeof campaign[field] !== "object") return;
     next[field] = { ...campaign[field] };
     [targetId, targetEmail].filter(Boolean).forEach((key) => { delete next[field][key]; });
@@ -601,7 +606,7 @@ async function deleteCampaignPlayer(campaign = {}, player = {}, user = null) {
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   };
-  ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser"].forEach((field) => {
+  ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "invites", "pendingInvites", "playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "availabilityByUser", "userProfiles", "playerProfiles", "memberProfiles"].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(nextCampaign, field)) updatePayload[field] = nextCampaign[field];
   });
 
@@ -1250,19 +1255,26 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
 function Players({ navigate, openSettings, activePlayers = [], activeCampaign, isDungeonMaster, plan, user, setCampaigns }) {
   const deletePlayer = (player) => {
     if (!activeCampaign || !isDungeonMaster) return;
-    Alert.alert("Remove Player", `Remove ${player?.name || player?.email || "this player"} from ${activeCampaign.name}?`, [
+    const playerLabel = player?.name || player?.email || "this player";
+    const runDelete = async () => {
+      try {
+        await deleteCampaignPlayer(activeCampaign, player, user);
+        setCampaigns?.((current) => current.map((campaign) => {
+          if (campaign.id !== activeCampaign.id) return campaign;
+          return campaignWithRemovedPlayer(campaign, player);
+        }));
+        Alert.alert("Player Removed", `${playerLabel} was removed from ${activeCampaign.name}.`);
+      } catch (error) {
+        Alert.alert("Remove Failed", error?.message || "Could not remove this player from the campaign.");
+      }
+    };
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined" || window.confirm(`Remove ${playerLabel} from ${activeCampaign.name}?`)) runDelete();
+      return;
+    }
+    Alert.alert("Remove Player", `Remove ${playerLabel} from ${activeCampaign.name}?`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Remove", style: "destructive", onPress: async () => {
-        try {
-          await deleteCampaignPlayer(activeCampaign, player, user);
-          setCampaigns?.((current) => current.map((campaign) => {
-            if (campaign.id !== activeCampaign.id) return campaign;
-            return campaignWithRemovedPlayer(campaign, player);
-          }));
-        } catch (error) {
-          Alert.alert("Remove Failed", error?.message || "Could not remove this player from the campaign.");
-        }
-      } },
+      { text: "Remove", style: "destructive", onPress: runDelete },
     ]);
   };
   return (
