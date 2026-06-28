@@ -692,6 +692,63 @@ async function deleteCampaignPlayer(campaign = {}, player = {}, user = null) {
   }
 }
 
+
+function userCampaignMembershipStatus(campaign = {}, user = null) {
+  if (!campaign || !user) return "none";
+  const uid = user.uid || "";
+  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  if (userIsDungeonMaster(user, campaign)) return "dm";
+  const inMemberIds = (campaign.memberIds || []).includes(uid) || (campaign.playerIds || []).includes(uid) || (campaign.participantIds || []).includes(uid);
+  const inObjectMembers = [campaign.members, campaign.players, campaign.participants].some((value) => {
+    if (Array.isArray(value)) return value.some((item) => item === uid || item?.uid === uid || item?.id === uid || normalizeEmail(item?.email || "") === email);
+    if (value && typeof value === "object") return Boolean(value[uid] || (email && value[email]));
+    return false;
+  });
+  const inviteRecord = (campaign.invitedPlayers || []).find((player) => player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email);
+  const emailInvited = !!email && ((campaign.invitedEmails || []).includes(email) || (campaign.playerEmails || []).includes(email));
+  if (inMemberIds || inObjectMembers || (inviteRecord && inviteRecord.invitePending === false)) return "member";
+  if (inviteRecord || emailInvited) return "invited";
+  return "none";
+}
+
+async function joinCampaign(campaign = {}, user = null, userProfile = null) {
+  if (!campaign?.id || !user?.uid) throw new Error("Missing campaign or user.");
+  const profile = getFirebaseUserProfile(user, userProfile);
+  const uid = user.uid;
+  const email = normalizeEmail(profile.email || user.email || "");
+  const memberIds = Array.from(new Set([...(campaign.memberIds || []), uid].filter(Boolean)));
+  const invitedPlayers = Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers.map((player) => {
+    if (player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email) {
+      return { ...player, uid, id: player.id || uid, email: player.email || email, name: player.name || profile.displayName, invitePending: false, status: "Joined", role: player.role || "Player" };
+    }
+    return player;
+  }) : [];
+  if (!invitedPlayers.some((player) => player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email)) {
+    invitedPlayers.push({ id: uid, uid, email, name: profile.displayName, role: "Player", invitePending: false, status: "Joined" });
+  }
+  const invitedEmails = (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email);
+  await enableNetwork(db).catch(() => {});
+  await updateDoc(doc(db, "campaigns", campaign.id), {
+    memberIds,
+    invitedPlayers,
+    invitedEmails,
+    updatedAt: new Date().toISOString(),
+    updatedAtServer: serverTimestamp(),
+  });
+}
+
+async function leaveCampaign(campaign = {}, user = null) {
+  if (!campaign?.id || !user?.uid) throw new Error("Missing campaign or user.");
+  if (userIsDungeonMaster(user, campaign)) throw new Error("Dungeon Masters must delete the campaign or transfer ownership instead of leaving.");
+  const player = { id: user.uid, uid: user.uid, email: user.email || user.providerData?.[0]?.email || "" };
+  const nextCampaign = campaignWithRemovedPlayer(campaign, player);
+  const fields = ["memberIds", "playerIds", "members", "invitedEmails", "playerEmails", "invitedPlayers", "players", "participantIds", "participants", "invites", "pendingInvites", "playerTokenImages", "campaignPlayerNames", "playerNames", "characterNames", "campaignCharacterNames", "availability", "unavailable", "availabilityByUser"];
+  const updatePayload = { updatedAt: new Date().toISOString(), updatedAtServer: serverTimestamp() };
+  fields.forEach((field) => { if (Object.prototype.hasOwnProperty.call(nextCampaign, field)) updatePayload[field] = nextCampaign[field]; });
+  await enableNetwork(db).catch(() => {});
+  await updateDoc(doc(db, "campaigns", campaign.id), updatePayload);
+}
+
 async function deleteCampaignById(id, campaign = null, user = null) {
   if (!id) throw new Error("Missing campaign id.");
   if (!user) throw new Error("You must be signed in to delete a campaign.");
@@ -1002,9 +1059,18 @@ function QuickAction({ icon, label, detail, onPress }) {
 }
 
 function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, user, isDungeonMaster, availabilityMode = "available", onDatePress }) {
-  const now = proposedDates[0]?.key ? new Date(`${proposedDates[0].key}T00:00:00`) : new Date();
+  const initialMonthKey = proposedDates[0]?.key ? proposedDates[0].key.slice(0, 7) : localDateKey(new Date()).slice(0, 7);
+  const [visibleMonthKey, setVisibleMonthKey] = useState(initialMonthKey);
+  useEffect(() => {
+    if (proposedDates[0]?.key) setVisibleMonthKey(proposedDates[0].key.slice(0, 7));
+  }, [activeCampaign?.id]);
+  const now = new Date(`${visibleMonthKey}-01T00:00:00`);
   const year = now.getFullYear();
   const month = now.getMonth();
+  const changeMonth = (amount) => {
+    const next = new Date(year, month + amount, 1);
+    setVisibleMonthKey(localDateKey(next).slice(0, 7));
+  };
   const first = new Date(year, month, 1);
   const start = new Date(year, month, 1 - first.getDay());
   const selectedKeys = new Set(proposedDates.map((d) => d.key));
@@ -1031,7 +1097,11 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
   const names = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   return (
     <View>
-      <Text style={styles.calendarTitle}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
+      <View style={styles.monthNavRow}>
+        <TouchableOpacity style={styles.monthNavButton} onPress={() => changeMonth(-1)}><Text style={styles.monthNavText}>‹</Text></TouchableOpacity>
+        <Text style={styles.calendarTitle}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
+        <TouchableOpacity style={styles.monthNavButton} onPress={() => changeMonth(1)}><Text style={styles.monthNavText}>›</Text></TouchableOpacity>
+      </View>
       <View style={styles.calendarGrid}>
         {names.map((n) => <Text key={n} style={styles.dayName}>{n}</Text>)}
         {cells.map((cell) => {
@@ -1324,6 +1394,12 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
         <SettingsRow label="Dungeon Master" detail={dmDisplay} onPress={() => navigate("campaignEditor")} />
         <SettingsRow label="Campaign Settings" detail={isDungeonMaster ? "Edit campaign options" : "Player name and reminder options"} onPress={() => navigate("campaignSettings")} />
         <SettingsRow label="Players" detail={`${campaignPlayers(activeCampaign, user, userProfiles).length} linked`} onPress={() => navigate("players")} />
+        {userCampaignMembershipStatus(activeCampaign, user) === "invited" ? (
+          <TouchableOpacity style={styles.primaryButton} onPress={async () => { try { await joinCampaign(activeCampaign, user, userProfile); Alert.alert("Campaign Joined", `You joined ${activeCampaign.name}.`); } catch (error) { Alert.alert("Join Failed", error?.message || "Could not join this campaign."); } }}><Text style={styles.primaryButtonText}>Join Campaign</Text></TouchableOpacity>
+        ) : null}
+        {userCampaignMembershipStatus(activeCampaign, user) === "member" ? (
+          <TouchableOpacity style={styles.outlineWideButton} onPress={() => Alert.alert("Leave Campaign", `Leave ${activeCampaign.name}?`, [{ text: "Cancel", style: "cancel" }, { text: "Leave", style: "destructive", onPress: async () => { try { await leaveCampaign(activeCampaign, user); setSelectedCampaignId?.(null); navigate("campaigns"); } catch (error) { Alert.alert("Leave Failed", error?.message || "Could not leave this campaign."); } } }])}><Text style={styles.outlineButtonText}>Leave Campaign</Text></TouchableOpacity>
+        ) : null}
         <TouchableOpacity style={styles.primaryButton} onPress={() => navigate("calendar")}><Text style={styles.primaryButtonText}>Open Calendar</Text></TouchableOpacity>
         {isDungeonMaster ? <TouchableOpacity style={styles.deleteAccountButton} onPress={deleteCurrent}><Text style={styles.deleteAccountText}>Delete Campaign</Text></TouchableOpacity> : null}
       </Card>
