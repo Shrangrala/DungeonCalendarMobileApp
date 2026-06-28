@@ -65,6 +65,16 @@ function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
 }
 
+
+function canonicalUserProfileDocId(user = {}) {
+  const email = normalizeEmail(user?.email || user?.providerData?.[0]?.email || "");
+  return email ? `email:${email.replace(/\//g, "%2F")}` : (user?.uid || "");
+}
+
+function userProfileDocRef(user = {}) {
+  return doc(db, "users", canonicalUserProfileDocId(user));
+}
+
 function makeId(prefix = "item") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -164,22 +174,38 @@ function mergeCampaignTokenIntoPlayer(player = {}, campaign = {}) {
   };
 }
 
+
+function canonicalDungeonMasterId(campaign = {}) {
+  const candidates = [
+    campaign.ownerId,
+    campaign.ownerUID,
+    campaign.ownerUid,
+    campaign.createdBy,
+    campaign.createdById,
+    campaign.creatorId,
+    campaign.dungeonMasterId,
+    campaign.dmId,
+    campaign.dmUid,
+    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
+    ...(Array.isArray(campaign.dmIds) ? campaign.dmIds : []),
+    ...(Array.isArray(campaign.dmUIDs) ? campaign.dmUIDs : []),
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return candidates[0] || "";
+}
+
+function normalizeSingleDungeonMasterIds(campaign = {}) {
+  const dmId = canonicalDungeonMasterId(campaign);
+  return dmId ? [dmId] : [];
+}
+
 function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
-  const ownerId = campaign.ownerId || campaign.ownerUID || campaign.ownerUid || campaign.createdBy || campaign.createdById || campaign.creatorId || campaign.dmId || campaign.dmUid || campaign.dungeonMasterId || "";
-  const dungeonMasterIds = Array.from(new Set(normalizeList([
-    ...(campaign.dungeonMasterIds || []),
-    ...(campaign.dmIds || []),
-    ...(campaign.dmUIDs || []),
-    campaign.dungeonMasterId,
-    campaign.dmId,
-    campaign.dmUid,
-    ownerId,
-  ]).filter(Boolean)));
+  const ownerId = canonicalDungeonMasterId(campaign);
+  const dungeonMasterIds = normalizeSingleDungeonMasterIds({ ...campaign, ownerId });
   return {
     ...campaign,
     id,
@@ -559,8 +585,12 @@ function userIsDungeonMaster(user, campaign) {
 async function saveCampaign(campaign) {
   if (!campaign?.id) return;
   await enableNetwork(db).catch(() => {});
+  const normalized = normalizeCampaign(campaign);
   await setDoc(doc(db, "campaigns", campaign.id), {
-    ...normalizeCampaign(campaign),
+    ...normalized,
+    dungeonMasterId: canonicalDungeonMasterId(normalized),
+    dmIds: deleteField(),
+    dmUIDs: deleteField(),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
@@ -841,8 +871,11 @@ function buildCalendarExportUrls(campaign, dateKey) {
 async function saveUserSettings(user, settings) {
   if (!user?.uid) return;
   await enableNetwork(db).catch(() => {});
-  await setDoc(doc(db, "users", user.uid), {
+  await setDoc(userProfileDocRef(user), {
     ...settings,
+    id: canonicalUserProfileDocId(user),
+    uid: user.uid,
+    firebaseUid: user.uid,
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
 }
@@ -1692,7 +1725,7 @@ function PlanSettings({ openSettings, user, userProfile, plan, billingInterval }
     const safePlan = normalizePlan(planId);
     if (safePlan === activePlan) return;
     if (safePlan === "free") {
-      await setDoc(doc(db, "users", user.uid), { plan: "free", billingInterval: "monthly", updatedAt: new Date().toISOString(), updatedAtServer: serverTimestamp() }, { merge: true });
+      await setDoc(userProfileDocRef(user), { id: canonicalUserProfileDocId(user), uid: user.uid, firebaseUid: user.uid, email: normalizeEmail(user.email || ""), plan: "free", billingInterval: "monthly", updatedAt: new Date().toISOString(), updatedAtServer: serverTimestamp() }, { merge: true });
       Alert.alert("Plan Updated", "Your account was moved to the Free plan.");
       return;
     }
@@ -1707,7 +1740,11 @@ function PlanSettings({ openSettings, user, userProfile, plan, billingInterval }
       Alert.alert("Stripe", "No Stripe payment link is configured for that plan and billing cycle.");
       return;
     }
-    await setDoc(doc(db, "users", user.uid), {
+    await setDoc(userProfileDocRef(user), {
+      id: canonicalUserProfileDocId(user),
+      uid: user.uid,
+      firebaseUid: user.uid,
+      email: normalizeEmail(user.email || ""),
       pendingStripePlan: safePlan,
       pendingStripeBillingInterval: safeInterval,
       pendingStripeEmail: user?.email || "",
@@ -2558,7 +2595,7 @@ export default function DungeonCalendarMobileApp() {
     enableNetwork(db).catch((error) => {
       console.warn("Could not force Firestore network on:", error);
     });
-    const unsubscribeProfile = onSnapshot(doc(db, "users", user.uid), { includeMetadataChanges: true }, (snap) => {
+    const unsubscribeProfile = onSnapshot(userProfileDocRef(user), { includeMetadataChanges: true }, (snap) => {
       setUserProfile(snap.exists() ? snap.data() : null);
     }, (error) => {
       console.warn("Mobile profile sync failed:", error);
@@ -2567,7 +2604,11 @@ export default function DungeonCalendarMobileApp() {
     const unsubscribeUserProfiles = onSnapshot(collection(db, "users"), { includeMetadataChanges: true }, (snapshot) => {
       const profileMap = {};
       snapshot.docs.forEach((item) => {
-        profileMap[item.id] = { id: item.id, ...item.data() };
+        const data = { id: item.id, ...item.data() };
+        profileMap[item.id] = data;
+        if (data.uid) profileMap[data.uid] = data;
+        if (data.firebaseUid) profileMap[data.firebaseUid] = data;
+        if (data.email) profileMap[normalizeEmail(data.email)] = data;
       });
       setUserProfiles(profileMap);
     }, (error) => {
@@ -2583,6 +2624,14 @@ export default function DungeonCalendarMobileApp() {
         return;
       }
       setSyncStatus("live");
+      snapshot.docs.forEach((item) => {
+        const raw = { id: item.id, ...item.data() };
+        const normalized = normalizeCampaign(raw);
+        const rawDmIds = Array.isArray(raw.dungeonMasterIds) ? raw.dungeonMasterIds.filter(Boolean) : [];
+        if (rawDmIds.length !== normalized.dungeonMasterIds.length || rawDmIds[0] !== normalized.dungeonMasterIds[0]) {
+          saveCampaign(normalized).catch((error) => console.warn("Could not clean duplicate Dungeon Master IDs:", error));
+        }
+      });
       const visibleCampaigns = snapshot.docs
         .map((item) => normalizeCampaign({ id: item.id, ...item.data() }))
         .filter((campaign) => visibleToUser(campaign, user))
