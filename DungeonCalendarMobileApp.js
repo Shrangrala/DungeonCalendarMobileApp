@@ -1112,7 +1112,7 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
     <View>
       <View style={styles.monthNavRow}>
         <TouchableOpacity style={styles.monthNavButton} onPress={() => changeMonth(-1)}><Text style={styles.monthNavText}>‹</Text></TouchableOpacity>
-        <Text style={styles.calendarTitle}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
+        <Text style={styles.monthCalendarTitle}>{now.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
         <TouchableOpacity style={styles.monthNavButton} onPress={() => changeMonth(1)}><Text style={styles.monthNavText}>›</Text></TouchableOpacity>
       </View>
       <View style={styles.calendarGrid}>
@@ -2875,6 +2875,10 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: COLORS.white, fontSize: 15, fontWeight: "900" },
   secondaryButton: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, paddingVertical: 14, alignItems: "center", width: "100%", marginTop: 10 },
   secondaryButtonText: { color: COLORS.white, fontSize: 15, fontWeight: "800" },
+  monthNavRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", width: "100%", marginBottom: 10 },
+  monthNavButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card },
+  monthNavText: { color: COLORS.gold, fontSize: 30, lineHeight: 34, fontWeight: "900" },
+  monthCalendarTitle: { color: COLORS.gold, fontSize: 18, fontWeight: "900", textAlign: "center", marginBottom: 0, flex: 1 },
   calendarTitle: { color: COLORS.gold, fontSize: 18, fontWeight: "900", textAlign: "center", marginBottom: 10 },
   calendarGrid: { flexDirection: "row", flexWrap: "wrap" },
   dayName: { width: "14.285%", textAlign: "center", color: COLORS.muted, fontSize: 10, marginBottom: 8 },
