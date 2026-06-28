@@ -61,14 +61,17 @@ const COLORS = {
   amber: "#f59e0b",
 };
 
+function safeObject(value = {}) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
 }
 
 
 function canonicalUserProfileDocId(user = {}) {
-  const email = normalizeEmail(user?.email || user?.providerData?.[0]?.email || "");
-  return email ? `email:${email.replace(/\//g, "%2F")}` : (user?.uid || "");
+  return String(user?.uid || "");
 }
 
 function userProfileDocRef(user = {}) {
@@ -176,6 +179,7 @@ function mergeCampaignTokenIntoPlayer(player = {}, campaign = {}) {
 
 
 function canonicalDungeonMasterId(campaign = {}) {
+  campaign = safeObject(campaign);
   const candidates = [
     campaign.ownerId,
     campaign.ownerUID,
@@ -190,7 +194,10 @@ function canonicalDungeonMasterId(campaign = {}) {
     ...(Array.isArray(campaign.dmIds) ? campaign.dmIds : []),
     ...(Array.isArray(campaign.dmUIDs) ? campaign.dmUIDs : []),
   ].map((value) => String(value || "").trim()).filter(Boolean);
-  return candidates[0] || "";
+  const signedInUid = auth?.currentUser?.uid || "";
+  if (signedInUid && candidates.includes(signedInUid)) return signedInUid;
+  const uidCandidate = candidates.find((value) => !value.startsWith("email:") && !value.includes("@"));
+  return uidCandidate || candidates[0] || "";
 }
 
 function normalizeSingleDungeonMasterIds(campaign = {}) {
