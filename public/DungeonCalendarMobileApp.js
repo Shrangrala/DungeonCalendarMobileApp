@@ -233,6 +233,60 @@ async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
   }
 }
 
+function campaignLocalPlayerRecord(player = {}, campaignId = "") {
+  player = player && typeof player === "object" ? player : {};
+  const uid = player.uid || player.userId || player.id || "";
+  const email = normalizeEmail(player.email || "");
+  const phone = player.phone || player.phoneNumber || "";
+  const phoneNormalized = normalizePhoneNumber(phone || player.phoneNormalized || "");
+  const characterName =
+    player.characterName ||
+    player.campaignPlayerName ||
+    player.playerName ||
+    (campaignId ? player.campaignCharacterNames?.[campaignId] : "") ||
+    "";
+  const tokenImage =
+    player.tokenImage ||
+    player.tokenUrl ||
+    (campaignId ? player.campaignTokenImages?.[campaignId] : "") ||
+    "";
+  return {
+    id: uid || email || phoneNormalized || makeId("player"),
+    uid: uid || undefined,
+    userId: uid || undefined,
+    name: player.name || player.displayName || player.username || characterName || email || "Player",
+    email,
+    phone,
+    phoneNormalized,
+    role: player.role || "Player",
+    characterName,
+    campaignPlayerName: characterName,
+    playerName: characterName,
+    tokenImage,
+    tokenUrl: tokenImage,
+    color: player.color || COLORS.green,
+    invitePending: player.invitePending !== false,
+  };
+}
+
+function playerIdentityKey(player = {}) {
+  player = player && typeof player === "object" ? player : {};
+  return player.uid || player.userId || player.id || normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || "";
+}
+
+function normalizeCampaignPlayers(players = [], campaignId = "") {
+  const seen = new Set();
+  return (Array.isArray(players) ? players : [])
+    .filter((player) => player && typeof player === "object")
+    .map((player) => campaignLocalPlayerRecord(player, campaignId))
+    .filter((player) => {
+      const key = playerIdentityKey(player);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
   const ownerId = canonicalDungeonMasterId(campaign);
@@ -245,7 +299,7 @@ function normalizeCampaign(campaign = {}) {
     dungeonMasterIds,
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
-    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers, id),
     playerTokenImages: campaign.playerTokenImages || {},
     campaignTokenUrl: campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
     campaignImageUrl: campaign.campaignImageUrl || campaign.campaignTokenUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
@@ -317,21 +371,15 @@ function playerFromFirebaseUser(user, activeCampaignId = "", nameOverride = "") 
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
-  const email = normalizeEmail(player.email || "");
+  const local = campaignLocalPlayerRecord(player, campaignId);
   return {
-    id: player.id || player.uid || email || makeId("player"),
-    name: player.name || player.displayName || player.username || email || "Player",
-    email,
-    role: player.role || "Player",
-    campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
-    campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: player.characterName || "" } : {}),
-    campaignTokenImages: player.campaignTokenImages || {},
-    tokenImage: player.tokenImage || player.tokenUrl || "",
-    tokenUrl: player.tokenUrl || player.tokenImage || "",
-    color: player.color || COLORS.green,
-    invitePending: player.invitePending !== false,
+    ...local,
+    campaignIds: campaignId ? [campaignId] : [],
+    campaignCharacterNames: campaignId ? { [campaignId]: local.characterName || "" } : {},
+    campaignTokenImages: campaignId && local.tokenImage ? { [campaignId]: local.tokenImage } : {},
   };
 }
+
 
 
 
@@ -410,19 +458,16 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
     campaignPlayerNames: {
       ...(campaign.campaignPlayerNames || {}),
       [uid]: cleanName,
-      ...(email ? { [email]: cleanName } : {}),
     },
     playerNames: {
       ...(campaign.playerNames || {}),
       [uid]: cleanName,
-      ...(email ? { [email]: cleanName } : {}),
     },
     characterNames: {
       ...(campaign.characterNames || {}),
       [uid]: cleanName,
-      ...(email ? { [email]: cleanName } : {}),
     },
-    invitedPlayers,
+    invitedPlayers: normalizeCampaignPlayers(invitedPlayers, campaign.id),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
@@ -797,7 +842,7 @@ async function joinCampaign(campaign = {}, user = null, userProfile = null) {
   await enableNetwork(db).catch(() => {});
   await updateDoc(doc(db, "campaigns", campaign.id), {
     memberIds,
-    invitedPlayers,
+    invitedPlayers: normalizeCampaignPlayers(invitedPlayers, campaign.id),
     invitedEmails,
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
@@ -1088,8 +1133,7 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
               <View style={styles.sessionInfo}>
                 <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
                 <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
-                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {activeCampaign.defaultLocation || activeCampaign.location || "Location not set"}</Text>
-                <Text style={styles.sessionAccent}>{nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
               </View>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
