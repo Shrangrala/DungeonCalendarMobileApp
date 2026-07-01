@@ -425,6 +425,24 @@ function campaignPlayerNameForUser(campaign = {}, user = null, userProfile = nul
   );
 }
 
+function campaignPlayerNameById(campaign = {}, idOrEmail = "") {
+  const key = String(idOrEmail || "").trim();
+  if (!key) return "";
+  const email = normalizeEmail(key);
+  const maps = [
+    campaign.campaignPlayerNames,
+    campaign.playerNames,
+    campaign.characterNames,
+    campaign.campaignCharacterNames,
+  ].filter(Boolean);
+  for (const map of maps) {
+    if (map?.[key]) return String(map[key]).trim();
+    if (email && map?.[email]) return String(map[email]).trim();
+  }
+  return "";
+}
+
+
 async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = null, playerName = "") {
   if (!campaign?.id) throw new Error("Missing campaign.");
   if (!user?.uid) throw new Error("You must be signed in to save your player name.");
@@ -490,6 +508,7 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
   campaign = safeObject(campaign);
   if (!Object.keys(campaign).length) return user ? [playerFromFirebaseUser(user)] : [];
   const byKey = new Map();
+  const dmIdSet = new Set([campaign.ownerId, campaign.dungeonMasterId, ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [])].filter(Boolean).map(String));
 
   const displayNameFromProfile = (idOrEmail = "") => {
     const key = String(idOrEmail || "");
@@ -497,31 +516,57 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
     return publicProfileDisplayName(profile) || profile?.email || "";
   };
 
+  const usefulName = (name = "") => {
+    const value = String(name || "").trim();
+    if (!value) return "";
+    if (["campaign member", "player", "member"].includes(value.toLowerCase())) return "";
+    return value;
+  };
+
   const isPlaceholderOnly = (record = {}) => {
-    const name = String(record.name || record.displayName || record.username || "").trim().toLowerCase();
+    const name = usefulName(record.name || record.displayName || record.username || "");
     const email = normalizeEmail(record.email || record.userEmail || record.inviteEmail || "");
     const id = String(record.id || record.uid || record.userId || record.playerId || record.memberId || "").trim();
     const phone = String(record.phone || "").trim();
-    const hasRealName = name && !["campaign member", "player", "member"].includes(name);
     const profileName = displayNameFromProfile(id) || displayNameFromProfile(email);
-    const looksLikeGeneratedPlaceholder = !email && !phone && !hasRealName && !profileName;
-    // Bare UID-only or placeholder-only membership records are useful for permission checks, but they should not create fake rows.
+    const isDm = id && dmIdSet.has(id);
+    const looksLikeGeneratedPlaceholder = !email && !phone && !name && !profileName && !isDm;
     return looksLikeGeneratedPlaceholder && !(user?.uid && id === user.uid);
+  };
+
+  const mergePlayerRecords = (existing = {}, next = {}) => {
+    const existingIsDm = existing.role === "Dungeon Master";
+    const nextIsDm = next.role === "Dungeon Master";
+    const merged = { ...existing, ...next };
+    if (existingIsDm || nextIsDm) merged.role = "Dungeon Master";
+    if (existing.invitePending === false || next.invitePending === false || merged.role === "Dungeon Master") merged.invitePending = false;
+    const nextName = usefulName(next.name || next.campaignPlayerName || next.characterName || next.playerName);
+    const existingName = usefulName(existing.name || existing.campaignPlayerName || existing.characterName || existing.playerName);
+    merged.name = nextName || existingName || next.email || existing.email || (merged.role === "Dungeon Master" ? "Dungeon Master" : "Campaign Member");
+    return merged;
   };
 
   const add = (player = {}) => {
     const record = mergeCampaignTokenIntoPlayer(campaignPlayerRecord(player, campaign.id), campaign);
-    const id = record.id || record.uid || record.userId || record.playerId || record.memberId || record.__memberKey || "";
-    const profileName = displayNameFromProfile(id) || displayNameFromProfile(record.email);
+    const id = String(record.uid || record.userId || record.id || record.playerId || record.memberId || record.__memberKey || "").trim();
+    const email = normalizeEmail(record.email || record.userEmail || record.inviteEmail || "");
+    const profileName = displayNameFromProfile(id) || displayNameFromProfile(email);
+    const campaignName = campaignPlayerNameById(campaign, id) || campaignPlayerNameById(campaign, email);
+    const isDm = id && dmIdSet.has(id);
     const normalized = {
       ...record,
-      name: record.campaignPlayerName || record.characterName || record.playerName || profileName || record.name || record.displayName || record.username || (record.email ? record.email : "Campaign Member"),
+      id: id || record.id,
+      uid: id || record.uid,
+      userId: id || record.userId,
+      role: isDm ? "Dungeon Master" : (record.role || "Player"),
+      invitePending: isDm ? false : record.invitePending,
+      name: campaignName || record.campaignPlayerName || record.characterName || record.playerName || profileName || usefulName(record.name || record.displayName || record.username) || (email ? email : (isDm ? "Dungeon Master" : "Campaign Member")),
       email: record.email || record.userEmail || record.inviteEmail || (user?.uid && id === user.uid ? user.email : ""),
     };
     if (isPlaceholderOnly(normalized)) return;
-    const key = normalizeEmail(normalized.email) || normalized.id || normalized.__memberKey || normalized.uid || normalized.userId || normalized.playerId || `${normalized.__sourceField || "member"}-${normalized.__sourceIndex ?? ""}`;
+    const key = normalized.uid || normalized.userId || normalized.id || normalized.__memberKey || normalizeEmail(normalized.email) || `${normalized.__sourceField || "member"}-${normalized.__sourceIndex ?? ""}`;
     if (!key) return;
-    byKey.set(key, { ...(byKey.get(key) || {}), ...normalized });
+    byKey.set(key, mergePlayerRecords(byKey.get(key) || {}, normalized));
   };
 
   const addCollection = (field, value, defaults = {}) => {
@@ -531,29 +576,32 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
           const text = item.trim();
           const email = text.includes("@") ? text : "";
           const profileName = displayNameFromProfile(text);
-          // Do not show fake UID-only rows unless the profile can be resolved.
-          if (!email && !profileName && !(user?.uid && text === user.uid)) return;
-          add({ ...defaults, id: text, uid: text, __memberKey: text, __sourceField: field, __sourceIndex: index, email, name: email || profileName || defaults.name || "Campaign Member" });
+          const campaignName = campaignPlayerNameById(campaign, text);
+          const isDm = dmIdSet.has(text);
+          if (!email && !profileName && !campaignName && !isDm && !(user?.uid && text === user.uid)) return;
+          add({ ...defaults, id: text, uid: text, userId: text, __memberKey: text, __sourceField: field, __sourceIndex: index, email, name: campaignName || email || profileName || defaults.name || (isDm ? "Dungeon Master" : "Campaign Member"), role: isDm ? "Dungeon Master" : defaults.role });
         } else if (item && typeof item === "object") {
-          const itemId = item.id || item.uid || item.userId || item.playerId || item.memberId || item.email || item.userEmail || item.inviteEmail || `${field}_${index}`;
+          const itemId = item.uid || item.userId || item.id || item.playerId || item.memberId || item.email || item.userEmail || item.inviteEmail || `${field}_${index}`;
           add({ ...defaults, __memberKey: itemId, __sourceField: field, __sourceIndex: index, ...item });
         }
       });
     } else if (value && typeof value === "object") {
       Object.entries(value).forEach(([key, item]) => {
-        if (item && typeof item === "object") add({ ...defaults, id: key, uid: key, __memberKey: key, __sourceField: field, ...item });
+        if (item && typeof item === "object") add({ ...defaults, id: key, uid: key, userId: key, __memberKey: key, __sourceField: field, ...item });
         else {
           const email = key.includes("@") ? key : "";
           const profileName = displayNameFromProfile(key);
-          if (!email && !profileName && !(user?.uid && key === user.uid)) return;
-          add({ ...defaults, id: key, uid: key, __memberKey: key, __sourceField: field, email, name: email || profileName || defaults.name || "Campaign Member" });
+          const campaignName = campaignPlayerNameById(campaign, key);
+          const isDm = dmIdSet.has(key);
+          if (!email && !profileName && !campaignName && !isDm && !(user?.uid && key === user.uid)) return;
+          add({ ...defaults, id: key, uid: key, userId: key, __memberKey: key, __sourceField: field, email, name: campaignName || email || profileName || defaults.name || (isDm ? "Dungeon Master" : "Campaign Member"), role: isDm ? "Dungeon Master" : defaults.role });
         }
       });
     }
   };
 
-  const dmIds = Array.from(new Set([campaign.ownerId, campaign.dungeonMasterId, ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [])].filter(Boolean)));
-  dmIds.forEach((dmId, index) => {
+  Array.from(dmIdSet).forEach((dmId, index) => {
+    const campaignName = campaignPlayerNameById(campaign, dmId);
     const dmProfileName = displayNameFromProfile(dmId);
     add({
       id: dmId,
@@ -564,13 +612,13 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
       __sourceIndex: index,
       invitePending: false,
       role: "Dungeon Master",
-      name: dmProfileName || (user?.uid === dmId ? getFirebaseUserProfile(user).displayName : "Dungeon Master"),
+      name: campaignName || dmProfileName || (user?.uid === dmId ? getFirebaseUserProfile(user).displayName : "Dungeon Master"),
       email: user?.uid === dmId ? user.email : "",
     });
   });
   if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), __memberKey: user.uid || user.email, role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
   addCollection("invitedPlayers", campaign.invitedPlayers, { invitePending: true });
-  addCollection("memberIds", campaign.memberIds, { invitePending: false, name: "Campaign Member" });
+  addCollection("memberIds", campaign.memberIds, { invitePending: false });
   addCollection("invitedEmails", campaign.invitedEmails, { invitePending: true });
   return Array.from(byKey.values());
 }
