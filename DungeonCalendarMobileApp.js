@@ -229,6 +229,16 @@ function normalizeUidList(values = []) {
     .filter((value) => value && !value.includes("@") && !value.startsWith("email:"))));
 }
 
+function cleanUidKeyedMap(map = {}, allowedIds = []) {
+  const allowed = new Set((allowedIds || []).map(String).filter(Boolean));
+  return Object.fromEntries(Object.entries(map || {}).filter(([key, value]) => {
+    const uid = normalizeUidList([key])[0] || "";
+    if (!uid) return false;
+    if (allowed.size && !allowed.has(uid)) return false;
+    return value !== undefined && value !== null;
+  }));
+}
+
 function stripCrossCampaignPlayerFields(player = {}) {
   player = safeObject(player);
   const { campaignIds, campaignCharacterNames, campaignTokenImages, lockedColorCampaignIds, ...campaignLocal } = player;
@@ -254,16 +264,23 @@ function campaignMemberKey(player = {}) {
   return "";
 }
 
-function normalizeCampaignPlayers(players = []) {
+function normalizeCampaignPlayers(players = [], campaign = {}) {
+  const ownerId = canonicalDungeonMasterId(campaign) || normalizeUidList([campaign.ownerId || campaign.createdBy || ""])[0] || "";
+  const dmIds = new Set([ownerId, ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [])].map((value) => normalizeUidList([value])[0]).filter(Boolean));
+  const memberIds = new Set(normalizeUidList([...(campaign.memberIds || []), ...(campaign.playerIds || []), ...(campaign.members || [])]));
   const byKey = new Map();
   (Array.isArray(players) ? players : []).filter((p) => p && typeof p === "object").map(stripCrossCampaignPlayerFields).forEach((player) => {
+    const uid = normalizeUidList([player.uid || player.userId || player.id || ""])[0] || "";
+    const role = String(player.role || player.campaignRole || "").toLowerCase();
+    const isDm = (uid && dmIds.has(uid)) || role.includes("dungeon") || role === "dm";
+    const isActiveMember = uid && memberIds.has(uid);
+    if (isDm || isActiveMember || player.invitePending === false) return;
     const key = campaignMemberKey(player);
     if (!key) return;
     byKey.set(key, { ...(byKey.get(key) || {}), ...player });
   });
   return Array.from(byKey.values());
 }
-
 function campaignSnapshotPayload(snapshotDoc) {
   const data = snapshotDoc?.data ? snapshotDoc.data() : {};
   // Firestore document ID is the only canonical campaign ID. A stale `id` field inside
@@ -290,18 +307,37 @@ async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
 function normalizeCampaign(campaign = {}) {
   campaign = safeObject(campaign);
   const id = campaign.id || makeId("campaign");
-  const ownerId = canonicalDungeonMasterId(campaign);
+  const ownerId = canonicalDungeonMasterId(campaign) || normalizeUidList([campaign.ownerId || campaign.createdBy || ""])[0] || "";
   const dungeonMasterIds = normalizeSingleDungeonMasterIds({ ...campaign, ownerId });
+  const memberIds = normalizeUidList([
+    ownerId,
+    ...dungeonMasterIds,
+    ...(normalizeList(campaign.memberIds)),
+    ...(normalizeList(campaign.playerIds)),
+    ...(normalizeList(campaign.members)),
+  ]);
+  const allowedIds = Array.from(new Set(memberIds));
   return {
     ...campaign,
     id,
     name: campaign.name || "Untitled Campaign",
     ownerId,
+    dungeonMasterId: ownerId || dungeonMasterIds[0] || "",
     dungeonMasterIds,
-    memberIds: normalizeUidList([...(normalizeList(campaign.memberIds)), ...(normalizeList(campaign.playerIds)), ...(normalizeList(campaign.members))]),
+    memberIds: allowedIds,
     invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
-    playerTokenImages: campaign.playerTokenImages || {},
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers, { ...campaign, ownerId, dungeonMasterIds, memberIds: allowedIds }),
+    players: [],
+    playerIds: [],
+    members: [],
+    participantIds: [],
+    participants: [],
+    playerEmails: [],
+    campaignPlayerNames: cleanUidKeyedMap(campaign.campaignPlayerNames, allowedIds),
+    playerNames: cleanUidKeyedMap(campaign.playerNames, allowedIds),
+    characterNames: cleanUidKeyedMap(campaign.characterNames, allowedIds),
+    campaignCharacterNames: {},
+    playerTokenImages: cleanUidKeyedMap(campaign.playerTokenImages, allowedIds),
     campaignTokenUrl: campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
     campaignImageUrl: campaign.campaignImageUrl || campaign.campaignTokenUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
     imageUrl: campaign.imageUrl || campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
@@ -322,7 +358,6 @@ function normalizeCampaign(campaign = {}) {
     defaultLocation: campaign.defaultLocation || campaign.location || "",
   };
 }
-
 function visibleToUser(campaign, user) {
   if (!user || campaign?.deletedAt || campaign?.archived === true) return false;
   const uid = user.uid;
@@ -447,63 +482,27 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
   if (!campaign?.id) throw new Error("Missing campaign.");
   if (!user?.uid) throw new Error("You must be signed in to save your player name.");
   const uid = user.uid;
-  const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
   const cleanName = String(playerName || "").trim();
-  const profile = getFirebaseUserProfile(user, userProfile);
-  const existingInvitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers);
-  let matched = false;
-  const invitedPlayers = existingInvitedPlayers.map((player) => {
-    const playerId = player.id || player.uid || player.userId || "";
-    const playerEmail = normalizeEmail(player.email || "");
-    const isMatch = (playerId && playerId === uid) || (email && playerEmail === email);
-    if (!isMatch) return player;
-    matched = true;
-    return {
-      ...player,
-      id: uid,
-      uid,
-      email: player.email || email,
-      name: cleanName || player.name || profile.displayName,
-      playerName: cleanName,
-      campaignPlayerName: cleanName,
-      characterName: cleanName,
-    };
+  const normalized = normalizeCampaign({
+    ...campaign,
+    memberIds: Array.from(new Set([...(campaign.memberIds || []), uid].filter(Boolean))),
+    campaignPlayerNames: { ...(campaign.campaignPlayerNames || {}), [uid]: cleanName },
+    playerNames: { ...(campaign.playerNames || {}), [uid]: cleanName },
+    characterNames: { ...(campaign.characterNames || {}), [uid]: cleanName },
   });
-  if (!matched) {
-    invitedPlayers.push({
-      id: uid,
-      uid,
-      email,
-      name: cleanName || profile.displayName,
-      playerName: cleanName,
-      campaignPlayerName: cleanName,
-      characterName: cleanName,
-      role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player",
-      invitePending: false,
-      campaignIds: [campaign.id],
-    });
-  }
   await enableNetwork(db).catch(() => {});
-  const cleanMap = (map = {}) => Object.fromEntries(Object.entries(map || {}).filter(([key]) => !String(key).includes("@") && !String(key).startsWith("email:")));
   await setDoc(doc(db, "campaigns", campaign.id), {
-    campaignPlayerNames: {
-      ...cleanMap(campaign.campaignPlayerNames),
-      [uid]: cleanName,
-    },
-    playerNames: {
-      ...cleanMap(campaign.playerNames),
-      [uid]: cleanName,
-    },
-    characterNames: {
-      ...cleanMap(campaign.characterNames),
-      [uid]: cleanName,
-    },
-    invitedPlayers,
+    memberIds: normalized.memberIds,
+    invitedPlayers: normalized.invitedPlayers,
+    campaignPlayerNames: normalized.campaignPlayerNames,
+    playerNames: normalized.playerNames,
+    characterNames: normalized.characterNames,
+    campaignCharacterNames: deleteField(),
+    players: deleteField(),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
 }
-
 function campaignPlayers(campaign, user, userProfiles = {}) {
   campaign = safeObject(campaign);
   if (!Object.keys(campaign).length) return user ? [playerFromFirebaseUser(user)] : [];
@@ -908,26 +907,25 @@ async function joinCampaign(campaign = {}, user = null, userProfile = null) {
   const uid = user.uid;
   const email = normalizeEmail(profile.email || user.email || "");
   const memberIds = normalizeUidList([...(campaign.memberIds || []), uid]);
-  const invitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers).map((player) => {
-    if (player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email) {
-      return { ...player, uid, id: uid, email: player.email || email, name: player.name || profile.displayName, invitePending: false, status: "Joined", role: player.role || "Player" };
-    }
-    return player;
+  const invitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers, { ...campaign, memberIds }).filter((player) => {
+    const playerUid = normalizeUidList([player.uid || player.userId || player.id || ""])[0] || "";
+    const playerEmail = normalizeEmail(player.email || "");
+    return playerUid !== uid && (!email || playerEmail !== email);
   });
-  if (!invitedPlayers.some((player) => player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email)) {
-    invitedPlayers.push({ id: uid, uid, email, name: profile.displayName, role: "Player", invitePending: false, status: "Joined" });
-  }
+  const normalized = normalizeCampaign({ ...campaign, memberIds, invitedPlayers });
   const invitedEmails = (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email);
   await enableNetwork(db).catch(() => {});
   await updateDoc(doc(db, "campaigns", campaign.id), {
-    memberIds,
-    invitedPlayers,
+    memberIds: normalized.memberIds,
+    invitedPlayers: normalized.invitedPlayers,
     invitedEmails,
+    players: deleteField(),
+    playerIds: deleteField(),
+    members: deleteField(),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   });
 }
-
 async function leaveCampaign(campaign = {}, user = null) {
   if (!campaign?.id || !user?.uid) throw new Error("Missing campaign or user.");
   if (userIsDungeonMaster(user, campaign)) throw new Error("Dungeon Masters must delete the campaign or transfer ownership instead of leaving.");
@@ -2452,30 +2450,16 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
     }
     const playerTokenImages = { ...(activeCampaign.playerTokenImages || {}) };
     activePlayers.forEach((p) => {
-      const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
-      const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
-      keys.forEach((key) => {
-        if (url) playerTokenImages[key] = url;
-        else delete playerTokenImages[key];
-      });
+      const uid = normalizeUidList([p.uid || p.userId || p.id || ""])[0] || "";
+      if (!uid) return;
+      const url = playerTokenUrls[uid] || playerTokenUrls[p.id] || playerTokenUrls[p.uid] || "";
+      if (url) playerTokenImages[uid] = url;
+      else delete playerTokenImages[uid];
     });
-    const invitedPlayers = (activeCampaign.invitedPlayers || []).map((p) => {
-      const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
-      const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
-      keys.forEach((key) => {
-        if (url) playerTokenImages[key] = url;
-        else delete playerTokenImages[key];
-      });
-      return {
-        ...p,
-        tokenUrl: url || p.tokenUrl || "",
-        tokenImage: url || p.tokenImage || "",
-        avatar: url || p.avatar || "",
-        campaignTokenImages: url
-          ? { ...(p.campaignTokenImages || {}), [activeCampaign.id]: url }
-          : { ...(p.campaignTokenImages || {}) },
-      };
+    Object.keys(playerTokenImages).forEach((key) => {
+      if (!normalizeUidList([key])[0]) delete playerTokenImages[key];
     });
+    const invitedPlayers = normalizeCampaignPlayers(activeCampaign.invitedPlayers, activeCampaign);
     await saveCampaign({
       ...activeCampaign,
       campaignTokenUrl,
