@@ -913,18 +913,27 @@ async function joinCampaign(campaign = {}, user = null, userProfile = null) {
     return playerUid !== uid && (!email || playerEmail !== email);
   });
   const normalized = normalizeCampaign({ ...campaign, memberIds, invitedPlayers });
+  const phone = normalizePhoneNumber(profile.phone || profile.phoneNumber || user.phoneNumber || "");
   const invitedEmails = (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email);
+  const invitedPhones = (campaign.invitedPhones || []).filter((item) => !phone || !phoneMatches(item, phone));
   await enableNetwork(db).catch(() => {});
   await updateDoc(doc(db, "campaigns", campaign.id), {
     memberIds: normalized.memberIds,
     invitedPlayers: normalized.invitedPlayers,
     invitedEmails,
+    invitedPhones,
     players: deleteField(),
     playerIds: deleteField(),
     members: deleteField(),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   });
+  await saveUserSettings(user, {
+    campaignIds: Array.from(new Set([...(userProfile?.campaignIds || []), campaign.id].filter(Boolean))),
+    email,
+    phone: profile.phone || profile.phoneNumber || user.phoneNumber || "",
+    phoneNormalized: phone,
+  }).catch((error) => console.warn("Could not save joined campaign to user profile:", error));
 }
 async function leaveCampaign(campaign = {}, user = null) {
   if (!campaign?.id || !user?.uid) throw new Error("Missing campaign or user.");
@@ -1858,8 +1867,29 @@ function ProfileScreen({ navigate, openSettings, user, userProfile }) {
   );
 }
 
-function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile }) {
+function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMaster, user, userProfile, setSelectedCampaignId }) {
   const currentCampaignPlayerName = campaignPlayerNameForUser(activeCampaign, user, userProfile);
+  const membershipStatus = userCampaignMembershipStatus(activeCampaign, user);
+  const handleJoin = async () => {
+    try {
+      await joinCampaign(activeCampaign, user, userProfile);
+      Alert.alert("Campaign Joined", `You joined ${activeCampaign?.name || "this campaign"}.`);
+    } catch (error) {
+      Alert.alert("Join Failed", error?.message || "Could not join this campaign.");
+    }
+  };
+  const handleLeave = () => Alert.alert("Leave Campaign", `Leave ${activeCampaign?.name || "this campaign"}?`, [
+    { text: "Cancel", style: "cancel" },
+    { text: "Leave", style: "destructive", onPress: async () => {
+      try {
+        await leaveCampaign(activeCampaign, user);
+        setSelectedCampaignId?.(null);
+        navigate("campaigns");
+      } catch (error) {
+        Alert.alert("Leave Failed", error?.message || "Could not leave this campaign.");
+      }
+    } }
+  ]);
   return (
     <Screen>
       <Header title="Campaign Settings" subtitle={activeCampaign?.name || "No campaign selected"} onSettings={openSettings} />
@@ -1880,7 +1910,13 @@ function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMas
             <Text style={styles.helperText}>Only the Dungeon Master can change campaign settings or choose the final session date.</Text>
             <SettingsRow label="Your Player Name" detail={currentCampaignPlayerName || "Set character/player name"} onPress={() => navigate("campaignPlayerName")} />
             <SettingsRow label="Reminder Settings" detail="Your session reminder preferences" onPress={() => navigate("campaignEditor")} />
-            <SettingsRow label="Campaign Role" detail="Player" onPress={() => navigate("campaignDetail")} />
+            <SettingsRow label="Campaign Role" detail={membershipStatus === "invited" ? "Invited" : membershipStatus === "member" ? "Player" : "Not joined"} onPress={() => navigate("campaignDetail")} />
+            {membershipStatus === "invited" || membershipStatus === "none" ? (
+              <TouchableOpacity style={styles.primaryButton} onPress={handleJoin}><Text style={styles.primaryButtonText}>Join Campaign</Text></TouchableOpacity>
+            ) : null}
+            {membershipStatus === "member" ? (
+              <TouchableOpacity style={styles.outlineWideButton} onPress={handleLeave}><Text style={styles.outlineButtonText}>Leave Campaign</Text></TouchableOpacity>
+            ) : null}
           </>
         )}
       </Card>
