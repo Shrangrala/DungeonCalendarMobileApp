@@ -1234,6 +1234,12 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
   const nextDate = chosen || null;
   const calendarEvent = buildCalendarExportUrls(activeCampaign, nextDate?.key);
   const canExport = hasPlanFeature(plan, "calendarExport");
+  const sessionLocationLabel = activeCampaign?.defaultLocation || activeCampaign?.location || "Location TBD";
+  const sessionTimeLabel = activeCampaign?.sessionTime || "Time TBD";
+  const availableIds = new Set(nextDate?.key ? (activeCampaign?.availability?.[nextDate.key] || []) : []);
+  const availablePlayersForSession = nextDate?.key
+    ? activePlayers.filter((player) => availableIds.has(player?.id) || availableIds.has(player?.uid) || availableIds.has(player?.userId))
+    : [];
   return (
     <Screen>
       <Header title="Welcome back," subtitle={profile.displayName} onSettings={openSettings} />
@@ -1266,10 +1272,25 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
               <View style={styles.sessionInfo}>
                 <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
                 <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
-                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+                <Text style={styles.sessionAccent}>{sessionTimeLabel} · {sessionLocationLabel}</Text>
+                <Text style={styles.sessionText}>{nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
               </View>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
+            {availablePlayersForSession.length ? (
+              <View style={styles.availablePlayersBlock}>
+                <Text style={styles.availablePlayersTitle}>Available Players</Text>
+                {availablePlayersForSession.map((p) => {
+                  const tokenUri = playerTokenUrlForCampaign(p, activeCampaign);
+                  return (
+                    <View key={`upcoming-${p.id || p.uid || p.email}`} style={styles.availablePlayerRow}>
+                      <ImageOrFallback uri={tokenUri} imageStyle={styles.availablePlayerAvatar} fallbackStyle={styles.availablePlayerAvatar}><Text style={styles.avatarText}>{String(p.name || p.email || "P")[0]}</Text></ImageOrFallback>
+                      <Text style={styles.availablePlayerName}>{p.name || p.email || "Player"}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
             {canExport && calendarEvent ? (
               <View style={styles.responseButtons}>
                 <TouchableOpacity style={styles.outlineWideButton} onPress={() => Linking.openURL(calendarEvent.googleUrl)}><Text style={styles.outlineButtonText}>Add to Google Calendar</Text></TouchableOpacity>
@@ -3271,6 +3292,11 @@ const styles = StyleSheet.create({
   playerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#1f1f1f" },
   avatar: { width: 52, height: 52, borderRadius: 26, borderWidth: 1, borderColor: COLORS.border, backgroundColor: "#3f1d1d", alignItems: "center", justifyContent: "center", marginRight: 12 },
   avatarText: { color: COLORS.white, fontWeight: "900" },
+  availablePlayersBlock: { marginTop: 12, borderTopWidth: 1, borderTopColor: "#27272a", paddingTop: 12 },
+  availablePlayersTitle: { color: COLORS.gold, fontSize: 14, fontWeight: "900", marginBottom: 8 },
+  availablePlayerRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  availablePlayerAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: "#3f3f46", alignItems: "center", justifyContent: "center", marginRight: 10 },
+  availablePlayerName: { color: COLORS.white, fontSize: 13, fontWeight: "800" },
   playerInfo: { flex: 1 },
   moreDots: { color: COLORS.muted, fontSize: 18 },
   quickAvailability: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
