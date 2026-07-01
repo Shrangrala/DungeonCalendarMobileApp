@@ -69,12 +69,6 @@ function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
 }
 
-function playerIdentityKey(player = {}) {
-  const uid = String(player?.uid || player?.firebaseUid || player?.userId || player?.id || "").trim();
-  if (uid && !uid.includes("@") && !uid.startsWith("player_") && !uid.startsWith("invite_")) return uid;
-  return normalizeEmail(player?.email || player?.userEmail || player?.inviteEmail || "") || uid;
-}
-
 
 function canonicalUserProfileDocId(user = {}) {
   return String(user?.uid || "");
@@ -215,6 +209,47 @@ function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
+function normalizeUidList(values = []) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => typeof value === "string" ? value.trim() : "")
+    .filter((value) => value && !value.includes("@") && !value.startsWith("email:"))));
+}
+
+function stripCrossCampaignPlayerFields(player = {}) {
+  player = safeObject(player);
+  const { campaignIds, campaignCharacterNames, campaignTokenImages, lockedColorCampaignIds, ...campaignLocal } = player;
+  const uid = String(campaignLocal.uid || campaignLocal.userId || campaignLocal.firebaseUid || campaignLocal.id || "").trim();
+  const email = normalizeEmail(campaignLocal.email || "");
+  return {
+    ...campaignLocal,
+    id: uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : (campaignLocal.id || email || ""),
+    uid: uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : (campaignLocal.uid || ""),
+    userId: uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : (campaignLocal.userId || ""),
+    email,
+  };
+}
+
+function campaignMemberKey(player = {}) {
+  player = safeObject(player);
+  const uid = String(player.uid || player.userId || player.firebaseUid || player.id || "").trim();
+  if (uid && !uid.includes("@") && !uid.startsWith("email:")) return `uid:${uid}`;
+  const email = normalizeEmail(player.email || "");
+  if (email) return `email:${email}`;
+  const phone = normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "");
+  if (phone) return `phone:${phone}`;
+  return "";
+}
+
+function normalizeCampaignPlayers(players = []) {
+  const byKey = new Map();
+  (Array.isArray(players) ? players : []).filter((p) => p && typeof p === "object").map(stripCrossCampaignPlayerFields).forEach((player) => {
+    const key = campaignMemberKey(player);
+    if (!key) return;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...player });
+  });
+  return Array.from(byKey.values());
+}
+
 function campaignSnapshotPayload(snapshotDoc) {
   const data = snapshotDoc?.data ? snapshotDoc.data() : {};
   // Firestore document ID is the only canonical campaign ID. A stale `id` field inside
@@ -238,60 +273,6 @@ async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
   }
 }
 
-function campaignLocalPlayerRecord(player = {}, campaignId = "") {
-  player = player && typeof player === "object" ? player : {};
-  const uid = player.uid || player.userId || player.id || "";
-  const email = normalizeEmail(player.email || "");
-  const phone = player.phone || player.phoneNumber || "";
-  const phoneNormalized = normalizePhoneNumber(phone || player.phoneNormalized || "");
-  const characterName =
-    player.characterName ||
-    player.campaignPlayerName ||
-    player.playerName ||
-    (campaignId ? player.campaignCharacterNames?.[campaignId] : "") ||
-    "";
-  const tokenImage =
-    player.tokenImage ||
-    player.tokenUrl ||
-    (campaignId ? player.campaignTokenImages?.[campaignId] : "") ||
-    "";
-  return {
-    id: uid || email || phoneNormalized || makeId("player"),
-    uid: uid || undefined,
-    userId: uid || undefined,
-    name: player.name || player.displayName || player.username || characterName || email || "Player",
-    email,
-    phone,
-    phoneNormalized,
-    role: player.role || "Player",
-    characterName,
-    campaignPlayerName: characterName,
-    playerName: characterName,
-    tokenImage,
-    tokenUrl: tokenImage,
-    color: player.color || COLORS.green,
-    invitePending: player.invitePending !== false,
-  };
-}
-
-function playerIdentityKey(player = {}) {
-  player = player && typeof player === "object" ? player : {};
-  return player.uid || player.userId || player.id || normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || "";
-}
-
-function normalizeCampaignPlayers(players = [], campaignId = "") {
-  const seen = new Set();
-  return (Array.isArray(players) ? players : [])
-    .filter((player) => player && typeof player === "object")
-    .map((player) => campaignLocalPlayerRecord(player, campaignId))
-    .filter((player) => {
-      const key = playerIdentityKey(player);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
   const ownerId = canonicalDungeonMasterId(campaign);
@@ -302,9 +283,9 @@ function normalizeCampaign(campaign = {}) {
     name: campaign.name || "Untitled Campaign",
     ownerId,
     dungeonMasterIds,
-    memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
-    invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers, id),
+    memberIds: normalizeUidList([...(normalizeList(campaign.memberIds)), ...(normalizeList(campaign.playerIds)), ...(normalizeList(campaign.members))]),
+    invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
     playerTokenImages: campaign.playerTokenImages || {},
     campaignTokenUrl: campaign.campaignTokenUrl || campaign.campaignImageUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
     campaignImageUrl: campaign.campaignImageUrl || campaign.campaignTokenUrl || campaign.imageUrl || campaign.coverImageUrl || campaign.tokenUrl || campaign.tokenImage || campaign.image || "",
@@ -376,15 +357,26 @@ function playerFromFirebaseUser(user, activeCampaignId = "", nameOverride = "") 
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
-  const local = campaignLocalPlayerRecord(player, campaignId);
+  player = stripCrossCampaignPlayerFields(player);
+  const uid = String(player.uid || player.userId || player.firebaseUid || player.id || "").trim();
+  const email = normalizeEmail(player.email || "");
+  const id = uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : (player.id || email || makeId("player"));
   return {
-    ...local,
-    campaignIds: campaignId ? [campaignId] : [],
-    campaignCharacterNames: campaignId ? { [campaignId]: local.characterName || "" } : {},
-    campaignTokenImages: campaignId && local.tokenImage ? { [campaignId]: local.tokenImage } : {},
+    id,
+    uid: uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : "",
+    userId: uid && !uid.includes("@") && !uid.startsWith("email:") ? uid : "",
+    name: player.name || player.displayName || player.username || email || "Player",
+    email,
+    role: player.role || "Player",
+    characterName: player.characterName || player.campaignPlayerName || player.playerName || "",
+    campaignPlayerName: player.campaignPlayerName || player.characterName || player.playerName || "",
+    playerName: player.playerName || player.characterName || player.campaignPlayerName || "",
+    tokenImage: player.tokenImage || player.tokenUrl || "",
+    tokenUrl: player.tokenUrl || player.tokenImage || "",
+    color: player.color || COLORS.green,
+    invitePending: player.invitePending !== false,
   };
 }
-
 
 
 
@@ -425,12 +417,12 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
   const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
   const cleanName = String(playerName || "").trim();
   const profile = getFirebaseUserProfile(user, userProfile);
-  const existingInvitedPlayers = Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [];
+  const existingInvitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers);
   let matched = false;
   const invitedPlayers = existingInvitedPlayers.map((player) => {
     const playerId = player.id || player.uid || player.userId || "";
     const playerEmail = normalizeEmail(player.email || "");
-    const isMatch = playerIdentityKey(player) === uid || (playerId && playerId === uid) || (email && playerEmail === email);
+    const isMatch = (playerId && playerId === uid) || (email && playerEmail === email);
     if (!isMatch) return player;
     matched = true;
     return {
@@ -438,7 +430,7 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
       id: uid,
       uid,
       email: player.email || email,
-      name: player.name || profile.displayName,
+      name: cleanName || player.name || profile.displayName,
       playerName: cleanName,
       campaignPlayerName: cleanName,
       characterName: cleanName,
@@ -449,7 +441,7 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
       id: uid,
       uid,
       email,
-      name: profile.displayName,
+      name: cleanName || profile.displayName,
       playerName: cleanName,
       campaignPlayerName: cleanName,
       characterName: cleanName,
@@ -459,24 +451,21 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
     });
   }
   await enableNetwork(db).catch(() => {});
-  await saveUserSettings(user, {
-    ...(userProfile || {}),
-    campaignCharacterNames: { ...(userProfile?.campaignCharacterNames || {}), [campaign.id]: cleanName },
-  }).catch(() => {});
+  const cleanMap = (map = {}) => Object.fromEntries(Object.entries(map || {}).filter(([key]) => !String(key).includes("@") && !String(key).startsWith("email:")));
   await setDoc(doc(db, "campaigns", campaign.id), {
     campaignPlayerNames: {
-      ...(campaign.campaignPlayerNames || {}),
+      ...cleanMap(campaign.campaignPlayerNames),
       [uid]: cleanName,
     },
     playerNames: {
-      ...(campaign.playerNames || {}),
+      ...cleanMap(campaign.playerNames),
       [uid]: cleanName,
     },
     characterNames: {
-      ...(campaign.characterNames || {}),
+      ...cleanMap(campaign.characterNames),
       [uid]: cleanName,
     },
-    invitedPlayers: normalizeCampaignPlayers(invitedPlayers, campaign.id),
+    invitedPlayers,
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
@@ -514,7 +503,7 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
       email: record.email || record.userEmail || record.inviteEmail || (user?.uid && id === user.uid ? user.email : ""),
     };
     if (isPlaceholderOnly(normalized)) return;
-    const key = playerIdentityKey(normalized) || normalized.__memberKey || `${normalized.__sourceField || "member"}-${normalized.__sourceIndex ?? ""}`;
+    const key = normalizeEmail(normalized.email) || normalized.id || normalized.__memberKey || normalized.uid || normalized.userId || normalized.playerId || `${normalized.__sourceField || "member"}-${normalized.__sourceIndex ?? ""}`;
     if (!key) return;
     byKey.set(key, { ...(byKey.get(key) || {}), ...normalized });
   };
@@ -549,14 +538,8 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
 
   if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), __memberKey: user.uid || user.email, role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
   addCollection("invitedPlayers", campaign.invitedPlayers, { invitePending: true });
-  addCollection("players", campaign.players, { invitePending: false });
-  addCollection("members", campaign.members, { invitePending: false, name: "Campaign Member" });
   addCollection("memberIds", campaign.memberIds, { invitePending: false, name: "Campaign Member" });
-  addCollection("playerIds", campaign.playerIds, { invitePending: false, name: "Campaign Member" });
-  addCollection("participants", campaign.participants, { invitePending: false, name: "Campaign Member" });
-  addCollection("participantIds", campaign.participantIds, { invitePending: false, name: "Campaign Member" });
   addCollection("invitedEmails", campaign.invitedEmails, { invitePending: true });
-  addCollection("playerEmails", campaign.playerEmails, { invitePending: false });
   return Array.from(byKey.values());
 }
 
@@ -676,6 +659,12 @@ async function saveCampaign(campaign) {
     dungeonMasterId: canonicalDungeonMasterId(normalized),
     dmIds: deleteField(),
     dmUIDs: deleteField(),
+    members: deleteField(),
+    players: deleteField(),
+    playerIds: deleteField(),
+    participantIds: deleteField(),
+    participants: deleteField(),
+    playerEmails: deleteField(),
     firestoreId: deleteField(),
     storedCampaignId: deleteField(),
     updatedAt: new Date().toISOString(),
@@ -836,13 +825,13 @@ async function joinCampaign(campaign = {}, user = null, userProfile = null) {
   const profile = getFirebaseUserProfile(user, userProfile);
   const uid = user.uid;
   const email = normalizeEmail(profile.email || user.email || "");
-  const memberIds = Array.from(new Set([...(campaign.memberIds || []), uid].filter(Boolean)));
-  const invitedPlayers = Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers.map((player) => {
+  const memberIds = normalizeUidList([...(campaign.memberIds || []), uid]);
+  const invitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers).map((player) => {
     if (player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email) {
-      return { ...player, uid, id: player.id || uid, email: player.email || email, name: player.name || profile.displayName, invitePending: false, status: "Joined", role: player.role || "Player" };
+      return { ...player, uid, id: uid, email: player.email || email, name: player.name || profile.displayName, invitePending: false, status: "Joined", role: player.role || "Player" };
     }
     return player;
-  }) : [];
+  });
   if (!invitedPlayers.some((player) => player?.uid === uid || player?.id === uid || normalizeEmail(player?.email || "") === email)) {
     invitedPlayers.push({ id: uid, uid, email, name: profile.displayName, role: "Player", invitePending: false, status: "Joined" });
   }
@@ -850,7 +839,7 @@ async function joinCampaign(campaign = {}, user = null, userProfile = null) {
   await enableNetwork(db).catch(() => {});
   await updateDoc(doc(db, "campaigns", campaign.id), {
     memberIds,
-    invitedPlayers: normalizeCampaignPlayers(invitedPlayers, campaign.id),
+    invitedPlayers,
     invitedEmails,
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
@@ -1363,7 +1352,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
     });
   };
   const removeDate = async (dateKey) => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     const availability = { ...(activeCampaign.availability || {}) };
     const unavailable = { ...(activeCampaign.unavailable || {}) };
     delete availability[dateKey];
@@ -1382,7 +1371,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
     });
   };
   const setChosen = async (dateKey) => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     const next = activeCampaign.chosenDate === dateKey ? "" : dateKey;
     const nextAvailability = next && activeCampaign.availability?.[next] ? { [next]: activeCampaign.availability[next] } : {};
     const nextUnavailable = next && activeCampaign.unavailable?.[next] ? { [next]: activeCampaign.unavailable[next] } : {};
@@ -1400,7 +1389,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
     });
   };
   const generateRecurring = async () => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     const finalDate = activeCampaign.chosenDate;
     if (!finalDate) {
       Alert.alert("Choose Final Date", "Set one proposed date as chosen before generating recurring sessions.");
@@ -1416,7 +1405,7 @@ function CalendarScreen({ navigate, openSettings, user, activeCampaign, proposed
     Alert.alert("Recurring Dates Saved", `${generated.length} recurring session date(s) were saved for this campaign.`);
   };
   const removeRecurring = async () => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     await saveCampaign({ ...activeCampaign, generatedSessionDates: [] });
   };
   return (
@@ -1526,10 +1515,11 @@ function Campaigns({ navigate, openSettings, campaigns = [], activeCampaign, set
         <Text style={styles.searchText}>Firebase-linked campaigns</Text>
         <TouchableOpacity style={styles.smallRedButton} onPress={() => {
           const normalizedPlan = normalizePlan(plan);
+          const planLimit = planLimits[normalizedPlan] || planLimits.free;
           const ownedCount = campaigns.filter((c) => userIsDungeonMaster(user, c)).length;
-          const limit = planLimits[normalizedPlan].campaigns;
+          const limit = planLimit.campaigns;
           if (ownedCount >= limit) {
-            Alert.alert("Plan Limit", `${planLimits[normalizedPlan].name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`);
+            Alert.alert("Plan Limit", `${planLimit.name} allows ${limit === Infinity ? "unlimited" : limit} campaign creation. Upgrade to create more campaigns.`);
             navigate("plan");
             return;
           }
@@ -1602,7 +1592,7 @@ function CampaignDetail({ navigate, openSettings, activeCampaign, isDungeonMaste
 }
 function Players({ navigate, openSettings, activePlayers = [], activeCampaign, isDungeonMaster, plan, user, setCampaigns }) {
   const deletePlayer = (player) => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     const playerLabel = player?.name || player?.email || "this player";
     const runDelete = async () => {
       try {
@@ -2118,7 +2108,7 @@ function ProposeDateScreen({ openSettings, activeCampaign, isDungeonMaster, navi
   const today = new Date().toISOString().slice(0, 10);
   const [dateText, setDateText] = useState(today);
   const addDate = async () => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     const key = String(dateText || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
       Alert.alert("Date format", "Use YYYY-MM-DD, for example 2026-07-04.");
@@ -2234,9 +2224,13 @@ function CampaignEditor({ openSettings, activeCampaign, user, navigate, isDungeo
       notificationReminderHours: reminderHours,
       sessionReminderHours: reminderHours,
     };
-    await saveCampaign(campaignToSave);
-    setSelectedCampaignId?.(campaignToSave.id);
-    navigate(isNewCampaign ? "campaignDetail" : "campaigns");
+    try {
+      await saveCampaign(campaignToSave);
+      setSelectedCampaignId?.(campaignToSave.id);
+      navigate(isNewCampaign ? "campaignDetail" : "campaigns");
+    } catch (error) {
+      Alert.alert("Campaign Save Failed", error?.message || "Could not save this campaign. Check Firestore rules and try again.");
+    }
   };
   if (activeCampaign && !isDungeonMaster) {
     const saveReminderOnly = async () => {
@@ -2319,7 +2313,7 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
     </Screen>
   );
 }
-function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate, user }) {
+function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDungeonMaster, plan, navigate }) {
   const campaignInitial = campaignImageUrl(activeCampaign);
   const [campaignTokenUrl, setCampaignTokenUrl] = useState(campaignInitial);
   const [playerTokenUrls, setPlayerTokenUrls] = useState({});
@@ -2334,7 +2328,7 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
     setCampaignTokenUrl(campaignImageUrl(activeCampaign));
   }, [activeCampaign?.id, JSON.stringify(activeCampaign?.playerTokenImages || {}), JSON.stringify(activeCampaign?.invitedPlayers || []), JSON.stringify(activePlayers || [])]);
   const uploadTokenImage = async (targetKey, setter) => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     if (!hasPlanFeature(plan, "tokenUploads")) {
       navigate("plan");
       return;
@@ -2369,14 +2363,13 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
     }
   };
   const saveTokens = async () => {
-    if (!activeCampaign) return;
+    if (!activeCampaign || !isDungeonMaster) return;
     if (!hasPlanFeature(plan, "tokenUploads")) {
       navigate("plan");
       return;
     }
-    const editablePlayers = activePlayers.filter((p) => isDungeonMaster || playerIdentityKey(p) === user?.uid);
     const playerTokenImages = { ...(activeCampaign.playerTokenImages || {}) };
-    editablePlayers.forEach((p) => {
+    activePlayers.forEach((p) => {
       const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
       const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
       keys.forEach((key) => {
@@ -2385,7 +2378,6 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
       });
     });
     const invitedPlayers = (activeCampaign.invitedPlayers || []).map((p) => {
-      if (!isDungeonMaster && playerIdentityKey(p) !== user?.uid) return p;
       const keys = Array.from(new Set([p.id, p.uid, normalizeEmail(p.email || "")].filter(Boolean)));
       const url = keys.map((key) => playerTokenUrls[key]).find(Boolean) || "";
       keys.forEach((key) => {
@@ -2427,17 +2419,15 @@ function TokenSettings({ openSettings, activeCampaign, activePlayers = [], isDun
         </Card>
       ) : (
         <Card>
-          {isDungeonMaster ? (<>
-            <Text style={styles.sectionTitle}>Campaign Token</Text>
-            {campaignTokenUrl ? <Image key={campaignTokenUrl} source={{ uri: campaignTokenUrl }} style={styles.tokenPreview} resizeMode="cover" /> : null}
-            <TouchableOpacity style={styles.primaryButton} onPress={() => uploadTokenImage("campaign", setCampaignTokenUrl)} disabled={uploadingKey === "campaign"}>
-              <Text style={styles.primaryButtonText}>{uploadingKey === "campaign" ? "Uploading..." : "Upload Campaign Token"}</Text>
-            </TouchableOpacity>
-            <EditableField label="Campaign Token Image URL" value={campaignTokenUrl} onChangeText={setCampaignTokenUrl} />
-          </>) : null}
+          <Text style={styles.sectionTitle}>Campaign Token</Text>
+          {campaignTokenUrl ? <Image key={campaignTokenUrl} source={{ uri: campaignTokenUrl }} style={styles.tokenPreview} resizeMode="cover" /> : null}
+          <TouchableOpacity style={styles.primaryButton} onPress={() => uploadTokenImage("campaign", setCampaignTokenUrl)} disabled={uploadingKey === "campaign"}>
+            <Text style={styles.primaryButtonText}>{uploadingKey === "campaign" ? "Uploading..." : "Upload Campaign Token"}</Text>
+          </TouchableOpacity>
+          <EditableField label="Campaign Token Image URL" value={campaignTokenUrl} onChangeText={setCampaignTokenUrl} />
           <Text style={styles.helperText}>Select Save Tokens after choosing an image. Saved images update the preview immediately and sync to the same Firebase fields used by the main app.</Text>
           <Text style={styles.sectionTitle}>Player Tokens</Text>
-          {activePlayers.filter((player) => isDungeonMaster || playerIdentityKey(player) === user?.uid).map((player) => {
+          {activePlayers.map((player) => {
             const key = player.id || player.uid || normalizeEmail(player.email);
             const currentUrl = playerTokenUrls[key] || playerTokenUrlForCampaign(player, activeCampaign);
             return (
@@ -2494,14 +2484,12 @@ function AvailabilityScreen({ openSettings, user, activeCampaign, proposedDates 
 }
 function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
   const profile = getFirebaseUserProfile(user, userProfile);
-  const [username, setUsername] = useState(userProfile?.username || profile.username || "");
   const [displayName, setDisplayName] = useState(profile.displayName);
   const [phone, setPhone] = useState(profile.phone || "");
   useEffect(() => {
-    setUsername(userProfile?.username || profile.username || "");
     setDisplayName(profile.displayName);
     setPhone(profile.phone || "");
-  }, [profile.displayName, profile.phone, userProfile?.username, profile.username]);
+  }, [profile.displayName, profile.phone]);
   const save = async () => {
     const cleanName = String(displayName || "").trim() || "Dungeon Calendar User";
     await updateProfile(auth.currentUser, { displayName: cleanName }).catch(() => {});
@@ -2525,8 +2513,7 @@ function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
         ) : (
           <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.profileLogo} resizeMode="contain" />
         )}
-        <EditableField label="Username" value={username} onChangeText={setUsername} />
-        <EditableField label="Full Name" value={displayName} onChangeText={setDisplayName} />
+        <EditableField label="Display Name" value={displayName} onChangeText={setDisplayName} />
         <EditableField label="Phone Number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
         <EditableField label="Email" value={profile.email} editable={false} />
         <Text style={styles.helperText}>Profile edits save to your signed-in account and sync with the main app.</Text>
