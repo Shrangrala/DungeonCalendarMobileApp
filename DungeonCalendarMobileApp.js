@@ -274,6 +274,7 @@ async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
 }
 
 function normalizeCampaign(campaign = {}) {
+  campaign = safeObject(campaign);
   const id = campaign.id || makeId("campaign");
   const ownerId = canonicalDungeonMasterId(campaign);
   const dungeonMasterIds = normalizeSingleDungeonMasterIds({ ...campaign, ownerId });
@@ -472,7 +473,8 @@ async function saveCampaignPlayerName(campaign = {}, user = null, userProfile = 
 }
 
 function campaignPlayers(campaign, user, userProfiles = {}) {
-  if (!campaign) return user ? [playerFromFirebaseUser(user)] : [];
+  campaign = safeObject(campaign);
+  if (!Object.keys(campaign).length) return user ? [playerFromFirebaseUser(user)] : [];
   const byKey = new Map();
 
   const displayNameFromProfile = (idOrEmail = "") => {
@@ -499,7 +501,7 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
     const profileName = displayNameFromProfile(id) || displayNameFromProfile(record.email);
     const normalized = {
       ...record,
-      name: profileName || record.name || record.displayName || record.username || (record.email ? record.email : "Campaign Member"),
+      name: record.campaignPlayerName || record.characterName || record.playerName || profileName || record.name || record.displayName || record.username || (record.email ? record.email : "Campaign Member"),
       email: record.email || record.userEmail || record.inviteEmail || (user?.uid && id === user.uid ? user.email : ""),
     };
     if (isPlaceholderOnly(normalized)) return;
@@ -536,6 +538,22 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
     }
   };
 
+  const dmIds = Array.from(new Set([campaign.ownerId, campaign.dungeonMasterId, ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [])].filter(Boolean)));
+  dmIds.forEach((dmId, index) => {
+    const dmProfileName = displayNameFromProfile(dmId);
+    add({
+      id: dmId,
+      uid: dmId,
+      userId: dmId,
+      __memberKey: dmId,
+      __sourceField: "dungeonMasterIds",
+      __sourceIndex: index,
+      invitePending: false,
+      role: "Dungeon Master",
+      name: dmProfileName || (user?.uid === dmId ? getFirebaseUserProfile(user).displayName : "Dungeon Master"),
+      email: user?.uid === dmId ? user.email : "",
+    });
+  });
   if (user) add({ ...playerFromFirebaseUser(user, campaign.id, campaignPlayerNameForUser(campaign, user) || ""), __memberKey: user.uid || user.email, role: userIsDungeonMaster(user, campaign) ? "Dungeon Master" : "Player" });
   addCollection("invitedPlayers", campaign.invitedPlayers, { invitePending: true });
   addCollection("memberIds", campaign.memberIds, { invitePending: false, name: "Campaign Member" });
@@ -608,6 +626,7 @@ function campaignDungeonMasterDisplayName(campaign = {}, user = null, userProfil
 }
 
 function campaignUserReminder(campaign = {}, user = null) {
+  campaign = safeObject(campaign);
   const settings = user?.uid ? campaign.userReminderSettings?.[user.uid] : null;
   const hours = Number(settings?.reminderHours ?? settings?.notificationReminderHours ?? campaign.reminderHours ?? 24);
   const unit = settings?.reminderUnit || (hours >= 24 && hours % 24 === 0 ? "days" : "hours");
@@ -651,6 +670,7 @@ function userIsDungeonMaster(user, campaign) {
 }
 
 async function saveCampaign(campaign) {
+  campaign = safeObject(campaign);
   if (!campaign?.id) return;
   await enableNetwork(db).catch(() => {});
   const normalized = normalizeCampaign(campaign);
