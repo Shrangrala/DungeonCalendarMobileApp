@@ -3,25 +3,33 @@
     "name": "Dungeon Calendar",
     "slug": "dungeon-calendar-mobile",
     "scheme": "dungeoncalendar",
-    "version": "1.0.22",
+    "version": "1.0.23",
     "orientation": "portrait",
     "icon": "./assets/app-icon.png",
     "userInterfaceStyle": "dark",
     "description": "Dungeon Calendar helps tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures.",
     "android": {
       "package": "com.anonymous.dungeoncalendar",
-      "versionCode": 22,
+      "versionCode": 23,
       "googleServicesFile": "./google-services.json",
       "permissions": [
-        "INTERNET"
+        "INTERNET",
+        "VIBRATE",
+        "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      "expo-notifications"
     ],
     "platforms": [
       "android",
       "web"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
+      }
+    }
   }
 }

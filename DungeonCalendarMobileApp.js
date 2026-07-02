@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -20,6 +20,8 @@ import { updateProfile } from "firebase/auth";
 import { collection, deleteDoc, deleteField, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 
 const nativeGoogleSignIn = Platform.OS !== "web" ? require("@react-native-google-signin/google-signin") : null;
 const GoogleSignin = nativeGoogleSignIn?.GoogleSignin || {
@@ -30,6 +32,112 @@ const GoogleSignin = nativeGoogleSignIn?.GoogleSignin || {
   signIn: async () => { throw new Error("Native Google Sign-In is not available on web."); },
 };
 const statusCodes = nativeGoogleSignIn?.statusCodes || { SIGN_IN_CANCELLED: "SIGN_IN_CANCELLED" };
+
+
+if (Platform.OS !== "web") {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
+
+const NOTIFICATION_TOKEN_FIELD = "expoPushTokens";
+
+function notificationUserWantsEnabled(userProfile = {}) {
+  const settings = safeObject(userProfile?.notificationSettings);
+  return settings.enabled !== false;
+}
+
+function campaignSessionDateTime(campaign = {}) {
+  const dateKey = campaign?.chosenDate || campaign?.finalDate || campaign?.sessionDate || campaign?.selectedDate || campaign?.nextSessionDate || "";
+  if (!dateKey) return null;
+  const time = /^\d{1,2}:\d{2}$/.test(String(campaign.sessionTime || "")) ? String(campaign.sessionTime).padStart(5, "0") : "18:00";
+  const date = new Date(`${dateKey}T${time}:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function registerForPushNotificationsAsync(user, userProfile) {
+  if (Platform.OS === "web" || !user?.uid || !notificationUserWantsEnabled(userProfile)) return null;
+  const existing = await Notifications.getPermissionsAsync();
+  let finalStatus = existing.status;
+  if (existing.status !== "granted") {
+    const requested = await Notifications.requestPermissionsAsync();
+    finalStatus = requested.status;
+  }
+  if (finalStatus !== "granted") {
+    await setDoc(userProfileDocRef(user), {
+      notificationPermissionStatus: finalStatus || "denied",
+      notificationUpdatedAt: new Date().toISOString(),
+      updatedAtServer: serverTimestamp(),
+    }, { merge: true });
+    return null;
+  }
+
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("session-reminders", {
+      name: "Session reminders",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#f4c76a",
+    });
+  }
+
+  let token = null;
+  try {
+    const projectId = Constants?.expoConfig?.extra?.eas?.projectId || Constants?.easConfig?.projectId;
+    const tokenResponse = projectId
+      ? await Notifications.getExpoPushTokenAsync({ projectId })
+      : await Notifications.getExpoPushTokenAsync();
+    token = tokenResponse?.data || null;
+  } catch (error) {
+    console.warn("Could not get Expo push token:", error);
+  }
+
+  const existingTokens = Array.isArray(userProfile?.[NOTIFICATION_TOKEN_FIELD]) ? userProfile[NOTIFICATION_TOKEN_FIELD] : [];
+  await setDoc(userProfileDocRef(user), {
+    notificationPermissionStatus: "granted",
+    notificationPlatform: Platform.OS,
+    ...(token ? { [NOTIFICATION_TOKEN_FIELD]: Array.from(new Set([...existingTokens, token])), expoPushToken: token } : {}),
+    notificationUpdatedAt: new Date().toISOString(),
+    updatedAtServer: serverTimestamp(),
+  }, { merge: true });
+  return token;
+}
+
+async function syncLocalSessionReminders(user, userProfile, campaigns = []) {
+  if (Platform.OS === "web") return;
+  await Notifications.cancelAllScheduledNotificationsAsync();
+  if (!user?.uid || !notificationUserWantsEnabled(userProfile)) return;
+  const sessionRemindersEnabled = safeObject(userProfile?.notificationSettings).sessionReminders !== false;
+  if (!sessionRemindersEnabled) return;
+
+  const now = Date.now();
+  const upcomingCampaigns = campaigns
+    .map((campaign) => ({ campaign, sessionDate: campaignSessionDateTime(campaign) }))
+    .filter(({ sessionDate }) => sessionDate && sessionDate.getTime() > now)
+    .slice(0, 50);
+
+  for (const { campaign, sessionDate } of upcomingCampaigns) {
+    const reminder = campaignUserReminder(campaign, user);
+    const reminderAt = new Date(sessionDate.getTime() - Math.max(0, Number(reminder.reminderHours || 0)) * 60 * 60 * 1000);
+    if (reminderAt.getTime() <= now) continue;
+    await Notifications.scheduleNotificationAsync({
+      identifier: `session-${campaign.id}-${sessionDate.toISOString()}`,
+      content: {
+        title: "Dungeon Calendar session reminder",
+        body: `${campaign.name || "Your campaign"} starts ${sessionDate.toLocaleString()}.`,
+        data: { campaignId: campaign.id, route: "session" },
+        sound: "default",
+      },
+      trigger: { date: reminderAt, channelId: "session-reminders" },
+    });
+  }
+}
 
 const WEB_CLIENT_ID = "1089961645011-3ts4dr2p473lnobgch0k5p7abk5rbeu9.apps.googleusercontent.com";
 
@@ -2010,6 +2118,8 @@ function CampaignSettings({ navigate, openSettings, activeCampaign, isDungeonMas
 }
 function Notifications({ navigate, openSettings, user, userProfile }) {
   const notificationSettings = userProfile?.notificationSettings || {};
+  const pushTokens = Array.isArray(userProfile?.expoPushTokens) ? userProfile.expoPushTokens : [];
+  const [busy, setBusy] = useState(false);
   const toggleSetting = async (key) => {
     const current = notificationSettings[key] !== false;
     await saveUserSettings(user, {
@@ -2018,6 +2128,23 @@ function Notifications({ navigate, openSettings, user, userProfile }) {
         [key]: !current,
       },
     });
+  };
+  const enablePhoneNotifications = async () => {
+    try {
+      setBusy(true);
+      const token = await registerForPushNotificationsAsync(user, {
+        ...userProfile,
+        notificationSettings: { ...notificationSettings, enabled: true },
+      });
+      await saveUserSettings(user, {
+        notificationSettings: { ...notificationSettings, enabled: true, sessionReminders: true },
+      });
+      Alert.alert(token ? "Phone Notifications Enabled" : "Permission Saved", token ? "This phone is registered for Dungeon Calendar push notifications." : "Permission is enabled, but no Expo push token was returned. Rebuild the app with notification support and try again.");
+    } catch (error) {
+      Alert.alert("Notifications Failed", error?.message || "Could not enable phone notifications.");
+    } finally {
+      setBusy(false);
+    }
   };
   const row = (label, key, detail) => (
     <SettingsRow
@@ -2030,6 +2157,10 @@ function Notifications({ navigate, openSettings, user, userProfile }) {
     <Screen>
       <Header title="Notifications" subtitle="Reminder settings synced to Firebase" onSettings={openSettings} />
       <Card>
+        <TouchableOpacity style={styles.primaryButton} onPress={enablePhoneNotifications} disabled={busy}>
+          <Text style={styles.primaryButtonText}>{busy ? "Enabling..." : "Enable Phone Notifications"}</Text>
+        </TouchableOpacity>
+        <Text style={styles.helperText}>Status: {userProfile?.notificationPermissionStatus || "not requested"} · Tokens saved: {pushTokens.length}</Text>
         {row("Enable Notifications", "enabled", "Master notification switch")}
         {row("Session Reminders", "sessionReminders", "Before chosen session dates")}
         {row("Player Availability Changes", "availabilityChanges", "When players update responses")}
@@ -2891,6 +3022,26 @@ export default function DungeonCalendarMobileApp() {
   const [syncStatus, setSyncStatus] = useState("connecting");
   const [userProfile, setUserProfile] = useState(null);
   const [userProfiles, setUserProfiles] = useState({});
+  const notificationResponseRef = useRef(null);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      notificationResponseRef.current = response;
+      const routeFromNotification = response?.notification?.request?.content?.data?.route;
+      if (routeFromNotification) setRoute(routeFromNotification);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    registerForPushNotificationsAsync(user, userProfile).catch((error) => console.warn("Notification registration failed:", error));
+  }, [user?.uid, userProfile?.notificationSettings?.enabled]);
+
+  useEffect(() => {
+    syncLocalSessionReminders(user, userProfile, campaigns).catch((error) => console.warn("Could not sync local session reminders:", error));
+  }, [user?.uid, userProfile?.notificationSettings?.enabled, userProfile?.notificationSettings?.sessionReminders, campaigns]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
