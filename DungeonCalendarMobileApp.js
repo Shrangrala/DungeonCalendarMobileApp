@@ -1249,14 +1249,18 @@ function CampaignSelector({ campaigns = [], activeCampaign, setSelectedCampaignI
   }
   return (
     <View style={styles.selector}>
-      <Text style={styles.selectorIcon}>⚜</Text>
-      <Text style={styles.selectorText}>{activeCampaign?.name || campaigns[0]?.name}</Text>
-      <Text style={styles.selectorPlan}>{campaigns.length} linked campaign{campaigns.length === 1 ? "" : "s"}</Text>
+      <View style={styles.selectorHeader}>
+        <Text style={styles.selectorIcon}>⚜</Text>
+        <View style={styles.selectorNameBlock}>
+          <Text style={styles.selectorText} numberOfLines={1} ellipsizeMode="tail">{activeCampaign?.name || campaigns[0]?.name}</Text>
+          <Text style={styles.selectorPlan}>{campaigns.length} linked campaign{campaigns.length === 1 ? "" : "s"}</Text>
+        </View>
+      </View>
       {campaigns.length > 1 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.selectorCampaignScroll} contentContainerStyle={styles.selectorCampaignScrollContent}>
           {campaigns.map((campaign) => (
             <TouchableOpacity key={campaign.id} style={styles.outlineButton} onPress={() => setSelectedCampaignId(campaign.id)}>
-              <Text style={styles.outlineButtonText}>{campaign.name}</Text>
+              <Text style={styles.outlineButtonText} numberOfLines={1} ellipsizeMode="tail">{campaign.name}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
@@ -1477,7 +1481,7 @@ function MiniCalendar({ compact = false, proposedDates = [], activeCampaign, use
         <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.red }]} /><Text style={styles.legendText}>Unavailable</Text></View>
         <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: COLORS.gold }]} /><Text style={styles.legendText}>Chosen</Text></View>
       </View>
-      {!isDungeonMaster ? <Text style={styles.helperText}>Players can only mark dates after the DM proposes/marks them available, matching the web app.</Text> : null}
+      {!isDungeonMaster ? <Text style={styles.helperText}>Players can only mark dates after the DM proposes/marks them available.</Text> : null}
     </View>
   );
 }
@@ -3298,19 +3302,26 @@ const styles = StyleSheet.create({
   pageTitle: { color: COLORS.white, fontSize: 26, fontWeight: "900" },
   pageSubtitle: { color: COLORS.gold, fontSize: 18, fontWeight: "900", marginTop: 6 },
   selector: {
-    height: 50,
+    minHeight: 50,
     backgroundColor: COLORS.panel2,
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
     paddingHorizontal: 14,
+    paddingVertical: 10,
     marginBottom: 12,
   },
+  selectorHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+  },
   selectorIcon: { color: COLORS.gold, fontSize: 20, marginRight: 10 },
-  selectorText: { color: COLORS.white, fontSize: 15, fontWeight: "800", flex: 1 },
-  selectorPlan: { color: COLORS.gold, fontSize: 11, marginRight: 10 },
+  selectorNameBlock: { flex: 1, minWidth: 0 },
+  selectorText: { color: COLORS.white, fontSize: 15, fontWeight: "800" },
+  selectorPlan: { color: COLORS.gold, fontSize: 11, marginTop: 2 },
+  selectorCampaignScroll: { marginTop: 8 },
+  selectorCampaignScrollContent: { paddingRight: 4, gap: 8 },
   selectorChevron: { color: COLORS.red, fontSize: 20 },
   statsGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", marginBottom: 12 },
   card: {

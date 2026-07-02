@@ -13,6 +13,11 @@ buildscript {
 }
 
 allprojects {
+  if (System.getProperty("os.name").toLowerCase().contains("windows")) {
+    if (project != rootProject) {
+      buildDir = new File(System.getProperty("user.home"), ".bd/dc/${project.path.replace(':', '_')}")
+    }
+  }
   repositories {
     google()
     mavenCentral()
