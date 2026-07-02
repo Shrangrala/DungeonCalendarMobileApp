@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Dungeon Calendar",
-    "slug": "dungeon-calendar-mobile",
+    "slug": "dungeon-calendar",
     "scheme": "dungeoncalendar",
     "version": "1.0.23",
     "orientation": "portrait",
@@ -28,7 +28,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
+        "projectId": "979ae98a-0eb6-421c-830d-6feceb064b52"
       }
     }
   }

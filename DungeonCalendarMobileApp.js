@@ -20,7 +20,7 @@ import { updateProfile } from "firebase/auth";
 import { collection, deleteDoc, deleteField, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
-import * as Notifications from "expo-notifications";
+import * as ExpoNotifications from "expo-notifications";
 import Constants from "expo-constants";
 
 const nativeGoogleSignIn = Platform.OS !== "web" ? require("@react-native-google-signin/google-signin") : null;
@@ -35,7 +35,7 @@ const statusCodes = nativeGoogleSignIn?.statusCodes || { SIGN_IN_CANCELLED: "SIG
 
 
 if (Platform.OS !== "web") {
-  Notifications.setNotificationHandler({
+  ExpoNotifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowBanner: true,
       shouldShowList: true,
@@ -62,10 +62,10 @@ function campaignSessionDateTime(campaign = {}) {
 
 async function registerForPushNotificationsAsync(user, userProfile) {
   if (Platform.OS === "web" || !user?.uid || !notificationUserWantsEnabled(userProfile)) return null;
-  const existing = await Notifications.getPermissionsAsync();
+  const existing = await ExpoNotifications.getPermissionsAsync();
   let finalStatus = existing.status;
   if (existing.status !== "granted") {
-    const requested = await Notifications.requestPermissionsAsync();
+    const requested = await ExpoNotifications.requestPermissionsAsync();
     finalStatus = requested.status;
   }
   if (finalStatus !== "granted") {
@@ -78,9 +78,9 @@ async function registerForPushNotificationsAsync(user, userProfile) {
   }
 
   if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("session-reminders", {
+    await ExpoNotifications.setNotificationChannelAsync("session-reminders", {
       name: "Session reminders",
-      importance: Notifications.AndroidImportance.HIGH,
+      importance: ExpoNotifications.AndroidImportance.HIGH,
       sound: "default",
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#f4c76a",
@@ -91,8 +91,8 @@ async function registerForPushNotificationsAsync(user, userProfile) {
   try {
     const projectId = Constants?.expoConfig?.extra?.eas?.projectId || Constants?.easConfig?.projectId;
     const tokenResponse = projectId
-      ? await Notifications.getExpoPushTokenAsync({ projectId })
-      : await Notifications.getExpoPushTokenAsync();
+      ? await ExpoNotifications.getExpoPushTokenAsync({ projectId })
+      : await ExpoNotifications.getExpoPushTokenAsync();
     token = tokenResponse?.data || null;
   } catch (error) {
     console.warn("Could not get Expo push token:", error);
@@ -111,7 +111,7 @@ async function registerForPushNotificationsAsync(user, userProfile) {
 
 async function syncLocalSessionReminders(user, userProfile, campaigns = []) {
   if (Platform.OS === "web") return;
-  await Notifications.cancelAllScheduledNotificationsAsync();
+  await ExpoNotifications.cancelAllScheduledNotificationsAsync();
   if (!user?.uid || !notificationUserWantsEnabled(userProfile)) return;
   const sessionRemindersEnabled = safeObject(userProfile?.notificationSettings).sessionReminders !== false;
   if (!sessionRemindersEnabled) return;
@@ -126,7 +126,7 @@ async function syncLocalSessionReminders(user, userProfile, campaigns = []) {
     const reminder = campaignUserReminder(campaign, user);
     const reminderAt = new Date(sessionDate.getTime() - Math.max(0, Number(reminder.reminderHours || 0)) * 60 * 60 * 1000);
     if (reminderAt.getTime() <= now) continue;
-    await Notifications.scheduleNotificationAsync({
+    await ExpoNotifications.scheduleNotificationAsync({
       identifier: `session-${campaign.id}-${sessionDate.toISOString()}`,
       content: {
         title: "Dungeon Calendar session reminder",
@@ -3026,7 +3026,7 @@ export default function DungeonCalendarMobileApp() {
 
   useEffect(() => {
     if (Platform.OS === "web") return undefined;
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const subscription = ExpoNotifications.addNotificationResponseReceivedListener((response) => {
       notificationResponseRef.current = response;
       const routeFromNotification = response?.notification?.request?.content?.data?.route;
       if (routeFromNotification) setRoute(routeFromNotification);
