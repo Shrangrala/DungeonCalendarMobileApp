@@ -15,7 +15,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signOut as firebaseSignOut } from "./firebase";
+import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signInToFirebaseWithGooglePopup, signInWithEmailPassword, createAccountWithEmailPassword, signOut as firebaseSignOut } from "./firebase";
 import { updateProfile } from "firebase/auth";
 import { collection, deleteDoc, deleteField, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
@@ -1174,6 +1174,66 @@ function LoginScreen({ onGoogleLogin, onEmailLogin, authError }) {
       {authError ? <Text style={styles.errorText}>{authError}</Text> : null}
       <Text style={styles.legalText}>By continuing, you agree to our Terms of Service and Privacy Policy.</Text>
     </SafeAreaView>
+  );
+}
+
+
+function EmailLoginModal({ visible, onClose, onSubmit, busy = false, error = "" }) {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const isCreate = mode === "create";
+
+  useEffect(() => {
+    if (!visible) {
+      setMode("login");
+      setName("");
+      setEmail("");
+      setPassword("");
+    }
+  }, [visible]);
+
+  const submit = () => {
+    onSubmit({ mode, name: name.trim(), email: normalizeEmail(email), password });
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent>
+      <View style={styles.confirmBackdrop}>
+        <View style={styles.confirmBox}>
+          <Text style={styles.confirmTitle}>{isCreate ? "Create Account" : "Email Login"}</Text>
+          <Text style={styles.confirmText}>Use the same Firebase Email/Password account as DungeonCalendar.com. Your data will sync by Firebase UID.</Text>
+
+          {isCreate ? (
+            <>
+              <Text style={styles.confirmLabel}>Full Name</Text>
+              <TextInput value={name} onChangeText={setName} autoCapitalize="words" placeholder="Your name" placeholderTextColor="#6b7280" style={styles.deleteInput} />
+            </>
+          ) : null}
+
+          <Text style={styles.confirmLabel}>Email</Text>
+          <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="you@example.com" placeholderTextColor="#6b7280" style={styles.deleteInput} />
+
+          <Text style={styles.confirmLabel}>Password</Text>
+          <TextInput value={password} onChangeText={setPassword} secureTextEntry placeholder="Password" placeholderTextColor="#6b7280" style={styles.deleteInput} onSubmitEditing={submit} />
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+          <TouchableOpacity style={[styles.deleteConfirmButton, busy ? styles.disabledButton : null]} disabled={busy} onPress={submit}>
+            <Text style={styles.deleteConfirmText}>{busy ? "Please wait..." : (isCreate ? "Create Account" : "Log In")}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.cancelDeleteButton} onPress={() => setMode(isCreate ? "login" : "create")} disabled={busy}>
+            <Text style={styles.cancelDeleteText}>{isCreate ? "I already have an account" : "Create a new account"}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.cancelDeleteButton} onPress={onClose} disabled={busy}>
+            <Text style={styles.cancelDeleteText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -2817,6 +2877,9 @@ export default function DungeonCalendarMobileApp() {
   const [route, setRoute] = useState("dashboard");
   const [user, setUser] = useState(auth.currentUser);
   const [authError, setAuthError] = useState("");
+  const [emailLoginOpen, setEmailLoginOpen] = useState(false);
+  const [emailAuthBusy, setEmailAuthBusy] = useState(false);
+  const [emailAuthError, setEmailAuthError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [campaigns, setCampaigns] = useState([]);
@@ -2982,6 +3045,65 @@ export default function DungeonCalendarMobileApp() {
     });
   };
 
+
+  const describeEmailAuthError = (error) => {
+    const code = error?.code || "";
+    if (code === "auth/configuration-not-found" || code === "auth/operation-not-allowed") return "Firebase Email/Password sign-in is not enabled. In Firebase Console > Authentication > Sign-in method, enable Email/Password.";
+    if (code === "auth/email-already-in-use") return "That email is already used. Choose Log In instead of Create Account.";
+    if (code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found") return "Email or password is incorrect.";
+    if (code === "auth/weak-password") return "Password must be at least 6 characters.";
+    if (code === "auth/invalid-email") return "Enter a valid email address.";
+    return error?.message || "Email sign-in failed.";
+  };
+
+  const finishEmailAuth = async (credential, { mode, name, email }) => {
+    const firebaseUser = credential?.user;
+    if (!firebaseUser?.uid) throw new Error("Firebase Auth did not return a user ID.");
+    const displayName = name || firebaseUser.displayName || userProfile?.name || userProfile?.username || "";
+    if (mode === "create" && displayName && firebaseUser.displayName !== displayName) {
+      await updateProfile(firebaseUser, { displayName }).catch(() => {});
+    }
+    await saveUserSettings(firebaseUser, {
+      email: normalizeEmail(firebaseUser.email || email),
+      name: displayName || firebaseUser.displayName || "",
+      username: userProfile?.username || (displayName ? displayName.toLowerCase().replace(/\s+/g, "") : ""),
+      plan: readProfilePlan(userProfile || {}, "free"),
+      billingInterval: userProfile?.billingInterval || "monthly",
+      authProvider: "password",
+      updatedAt: new Date().toISOString(),
+    });
+    setUser(firebaseUser);
+    setEmailLoginOpen(false);
+    setEmailAuthError("");
+    setAuthError("");
+    setRoute("dashboard");
+  };
+
+  const handleEmailAuthSubmit = async ({ mode, name, email, password }) => {
+    if (emailAuthBusy) return;
+    setEmailAuthError("");
+    setAuthError("");
+    if (!email || !password) {
+      setEmailAuthError("Enter your email and password.");
+      return;
+    }
+    if (mode === "create" && !name) {
+      setEmailAuthError("Enter your name before creating an account.");
+      return;
+    }
+    setEmailAuthBusy(true);
+    try {
+      const credential = mode === "create"
+        ? await createAccountWithEmailPassword(email, password)
+        : await signInWithEmailPassword(email, password);
+      await finishEmailAuth(credential, { mode, name, email });
+    } catch (error) {
+      setEmailAuthError(describeEmailAuthError(error));
+    } finally {
+      setEmailAuthBusy(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     setAuthError("");
     try {
@@ -3010,7 +3132,9 @@ export default function DungeonCalendarMobileApp() {
   };
 
   const handleEmailLogin = () => {
-    setAuthError("Email login screen should connect to the same Firebase Email/Password provider as the main app.");
+    setAuthError("");
+    setEmailAuthError("");
+    setEmailLoginOpen(true);
   };
 
   const handleLogout = async () => {
@@ -3111,7 +3235,12 @@ export default function DungeonCalendarMobileApp() {
   }, [route, user, campaigns, selectedCampaignId, userProfile]);
 
   if (!user) {
-    return <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />;
+    return (
+      <>
+        <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />
+        <EmailLoginModal visible={emailLoginOpen} onClose={() => setEmailLoginOpen(false)} onSubmit={handleEmailAuthSubmit} busy={emailAuthBusy} error={emailAuthError} />
+      </>
+    );
   }
 
   return (

@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -29,6 +29,15 @@ export async function signInToFirebaseWithGooglePopup() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
   return signInWithPopup(auth, provider);
+}
+
+
+export async function signInWithEmailPassword(email, password) {
+  return signInWithEmailAndPassword(auth, String(email || '').trim().toLowerCase(), password);
+}
+
+export async function createAccountWithEmailPassword(email, password) {
+  return createUserWithEmailAndPassword(auth, String(email || '').trim().toLowerCase(), password);
 }
 
 export async function signOut() {

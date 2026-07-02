@@ -25,6 +25,15 @@ export async function signInToFirebaseWithGoogleIdToken(idToken) {
   return signInWithCredential(auth, credential);
 }
 
+
+export async function signInWithEmailPassword(email, password) {
+  return signInWithEmailAndPassword(auth, String(email || '').trim().toLowerCase(), password);
+}
+
+export async function createAccountWithEmailPassword(email, password) {
+  return createUserWithEmailAndPassword(auth, String(email || '').trim().toLowerCase(), password);
+}
+
 export async function signOut() {
   return firebaseSignOut(auth);
 }
