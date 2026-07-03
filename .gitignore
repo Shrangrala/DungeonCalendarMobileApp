@@ -23,3 +23,16 @@ public/babel.config.js
 public/vercel.json
 public/request.json
 public/DungeonCalendar
+
+# Android/Expo build artifacts and private submit credentials
+*.aab
+*.apk
+*.jks
+*.keystore
+service-account*.json
+*-service-account*.json
+upload_certificate*.pem
+upload_cert*.der
+android/app/release/
+android/app/build/
+public/android/

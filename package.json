@@ -1,6 +1,6 @@
 {
   "name": "dungeon-calendar-mobile",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "private": true,
   "main": "index.js",
   "scripts": {

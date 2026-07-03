@@ -10,9 +10,15 @@ coverage
 *.apk
 *.aab
 *.ipa
+*.log
+android
+ios
+public/android
+public/**/*.aab
+public/**/*.apk
 android/.gradle
 android/app/build
+android/app/release
 android/build
 ios/Pods
 ios/build
-*.log
