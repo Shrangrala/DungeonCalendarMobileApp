@@ -15,6 +15,9 @@
       "permissions": [
         "INTERNET",
         "VIBRATE",
+        "POST_NOTIFICATIONS",
+        "INTERNET",
+        "VIBRATE",
         "POST_NOTIFICATIONS"
       ]
     },
@@ -30,6 +33,13 @@
       "eas": {
         "projectId": "979ae98a-0eb6-421c-830d-6feceb064b52"
       }
-    }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/979ae98a-0eb6-421c-830d-6feceb064b52"
+    },
+    "ios": {}
   }
 }

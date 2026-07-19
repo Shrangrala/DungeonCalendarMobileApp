@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
+  ImageBackground,
   Linking,
   Modal,
   Platform,
@@ -1234,6 +1235,20 @@ function Icon({ children, color = COLORS.red }) {
 
 function Card({ children, style }) {
   return <View style={[styles.card, style]}>{children}</View>;
+}
+
+function BackgroundShell({ children }) {
+  return (
+    <ImageBackground
+      source={require("./assets/dungeon-background.jpg")}
+      style={styles.backgroundImage}
+      imageStyle={styles.backgroundImageAsset}
+      resizeMode="cover"
+    >
+      <View pointerEvents="none" style={styles.backgroundOverlay} />
+      {children}
+    </ImageBackground>
+  );
 }
 
 function Header({ title, subtitle, onSettings }) {
@@ -3391,42 +3406,50 @@ export default function DungeonCalendarMobileApp() {
 
   if (!user) {
     return (
-      <>
+      <BackgroundShell>
         <LoginScreen onGoogleLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} authError={authError} />
         <EmailLoginModal visible={emailLoginOpen} onClose={() => setEmailLoginOpen(false)} onSubmit={handleEmailAuthSubmit} busy={emailAuthBusy} error={emailAuthError} />
-      </>
+      </BackgroundShell>
     );
   }
 
   return (
-    <View style={styles.app}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
-      {screen}
-      <SyncBanner syncStatus={syncStatus} onReconnect={refreshFirebaseNetwork} />
-      <BottomNav route={route} navigate={navigate} openSettings={() => setSettingsOpen(true)} />
-      <SettingsModal
-        visible={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        navigate={navigate}
-        openDeleteAccount={() => setDeleteAccountOpen(true)}
-        handleLogout={handleLogout}
-        proposedDates={proposedDates}
-        isDungeonMaster={isDungeonMaster}
-      />
-      <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
-    </View>
+    <BackgroundShell>
+      <View style={styles.app}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+        {screen}
+        <SyncBanner syncStatus={syncStatus} onReconnect={refreshFirebaseNetwork} />
+        <BottomNav route={route} navigate={navigate} openSettings={() => setSettingsOpen(true)} />
+        <SettingsModal
+          visible={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          navigate={navigate}
+          openDeleteAccount={() => setDeleteAccountOpen(true)}
+          handleLogout={handleLogout}
+          proposedDates={proposedDates}
+          isDungeonMaster={isDungeonMaster}
+        />
+        <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
+      </View>
+    </BackgroundShell>
   );
 }
 
 const styles = StyleSheet.create({
-  app: { flex: 1, backgroundColor: COLORS.bg },
-  safeArea: { flex: 1, backgroundColor: COLORS.bg },
+  backgroundImage: { flex: 1, backgroundColor: COLORS.bg },
+  backgroundImageAsset: { opacity: 1 },
+  backgroundOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(2, 4, 10, 0.58)",
+  },
+  app: { flex: 1, backgroundColor: "transparent" },
+  safeArea: { flex: 1, backgroundColor: "transparent" },
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: Platform.OS === "android" ? 48 : 18,
     paddingBottom: 118,
   },
-  loginScreen: { flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center", padding: 24 },
+  loginScreen: { flex: 1, backgroundColor: "transparent", alignItems: "center", justifyContent: "center", padding: 24 },
   loginLogo: { width: 190, height: 190, marginBottom: 16 },
   loginTitle: { color: COLORS.gold, fontSize: 34, fontWeight: "900", textAlign: "center" },
   loginSubtitle: { color: COLORS.white, fontSize: 18, fontWeight: "800", marginTop: 8, marginBottom: 28 },
