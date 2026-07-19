@@ -3436,8 +3436,19 @@ export default function DungeonCalendarMobileApp() {
 }
 
 const styles = StyleSheet.create({
-  backgroundImage: { flex: 1, backgroundColor: COLORS.bg },
-  backgroundImageAsset: { opacity: 1 },
+  backgroundImage: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    alignSelf: "stretch",
+    backgroundColor: COLORS.bg,
+  },
+  backgroundImageAsset: {
+    opacity: 1,
+    width: "100%",
+    height: "100%",
+    ...(Platform.OS === "web" ? { objectPosition: "center center" } : {}),
+  },
   backgroundOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(2, 4, 10, 0.58)",
