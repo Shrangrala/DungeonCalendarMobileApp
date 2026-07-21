@@ -3409,14 +3409,25 @@ export default function DungeonCalendarMobileApp() {
   };
 
   const handleLogout = () => {
-    Alert.alert(
-      "Log out?",
-      "Are you sure you want to log out of Dungeon Calendar?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Log Out", style: "destructive", onPress: performLogout },
-      ],
-    );
+    // Close the Settings drawer before opening the native confirmation dialog.
+    // On Android, presenting an Alert while a Modal is closing can suppress the alert.
+    setSettingsOpen(false);
+    setTimeout(() => {
+      Alert.alert(
+        "Log out?",
+        "Are you sure you want to log out of Dungeon Calendar?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Log Out",
+            style: "destructive",
+            onPress: () => {
+              void performLogout();
+            },
+          },
+        ],
+      );
+    }, 300);
   };
 
   const finishWalkthrough = async () => {
