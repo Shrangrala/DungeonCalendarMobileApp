@@ -2983,7 +2983,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
                 <Text style={styles.chevron}>›</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity style={styles.menuItem} onPress={() => { onClose(); handleLogout(); }}>
+            <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
               <Text style={[styles.menuItemText, { color: COLORS.red }]}>Log Out</Text>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
@@ -2993,6 +2993,28 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
             </TouchableOpacity>
           </Card>
           </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function LogoutConfirmModal({ visible, onCancel, onConfirm }) {
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
+      <View style={styles.confirmBackdrop}>
+        <View style={styles.confirmBox}>
+          <Text style={styles.confirmIcon}>↪</Text>
+          <Text style={styles.confirmTitle}>Log out?</Text>
+          <Text style={styles.confirmText}>
+            Are you sure you want to log out of Dungeon Calendar?
+          </Text>
+          <TouchableOpacity style={styles.deleteConfirmButton} onPress={onConfirm}>
+            <Text style={styles.deleteConfirmText}>Log Out</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.cancelDeleteButton} onPress={onCancel}>
+            <Text style={styles.cancelDeleteText}>Cancel</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -3097,6 +3119,7 @@ export default function DungeonCalendarMobileApp() {
   const [emailAuthBusy, setEmailAuthBusy] = useState(false);
   const [emailAuthError, setEmailAuthError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [walkthroughOpen, setWalkthroughOpen] = useState(false);
   const [campaigns, setCampaigns] = useState([]);
@@ -3391,6 +3414,7 @@ export default function DungeonCalendarMobileApp() {
   };
 
   const performLogout = async () => {
+    setLogoutConfirmOpen(false);
     setSettingsOpen(false);
     setDeleteAccountOpen(false);
     setWalkthroughOpen(false);
@@ -3409,25 +3433,10 @@ export default function DungeonCalendarMobileApp() {
   };
 
   const handleLogout = () => {
-    // Close the Settings drawer before opening the native confirmation dialog.
-    // On Android, presenting an Alert while a Modal is closing can suppress the alert.
+    // Use an in-app modal instead of Alert.alert. Native alerts can be lost
+    // while the Settings modal is dismissing on some Android builds.
     setSettingsOpen(false);
-    setTimeout(() => {
-      Alert.alert(
-        "Log out?",
-        "Are you sure you want to log out of Dungeon Calendar?",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Log Out",
-            style: "destructive",
-            onPress: () => {
-              void performLogout();
-            },
-          },
-        ],
-      );
-    }, 300);
+    setTimeout(() => setLogoutConfirmOpen(true), 400);
   };
 
   const finishWalkthrough = async () => {
@@ -3541,6 +3550,11 @@ export default function DungeonCalendarMobileApp() {
           handleLogout={handleLogout}
           proposedDates={proposedDates}
           isDungeonMaster={isDungeonMaster}
+        />
+        <LogoutConfirmModal
+          visible={logoutConfirmOpen}
+          onCancel={() => setLogoutConfirmOpen(false)}
+          onConfirm={() => { void performLogout(); }}
         />
         <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
         <NewUserWalkthrough visible={walkthroughOpen} onFinish={finishWalkthrough} />
