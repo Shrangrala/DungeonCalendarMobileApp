@@ -23,7 +23,6 @@ import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
 import * as ExpoNotifications from "expo-notifications";
 import Constants from "expo-constants";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const nativeGoogleSignIn = Platform.OS !== "web" ? require("@react-native-google-signin/google-signin") : null;
 const GoogleSignin = nativeGoogleSignIn?.GoogleSignin || {
@@ -154,6 +153,29 @@ async function signOutGoogleProviderSafely() {
   if (Platform.OS === "web") return;
   await GoogleSignin.signOut().catch(() => {});
   await GoogleSignin.revokeAccess().catch(() => {});
+}
+
+const DEEP_LINK_SECTIONS = new Set(["invite", "campaign", "results", "calendar"]);
+
+function parseDungeonCalendarDeepLink(url = "") {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    let section = parts[0] || "";
+    let campaignId = decodeURIComponent(parts[1] || parsed.searchParams.get("campaign") || "");
+
+    // Custom scheme support: dungeoncalendar://campaign/CAMPAIGN_ID
+    if (parsed.protocol === "dungeoncalendar:" && !DEEP_LINK_SECTIONS.has(section)) {
+      section = parsed.hostname || section;
+      campaignId = decodeURIComponent(parts[0] || parsed.searchParams.get("campaign") || "");
+    }
+
+    if (!DEEP_LINK_SECTIONS.has(section) || !campaignId) return null;
+    const route = section === "results" ? "results" : section === "calendar" ? "calendar" : "campaignDetail";
+    return { section, campaignId, route };
+  } catch {
+    return null;
+  }
 }
 
 const COLORS = {
@@ -1307,7 +1329,6 @@ function EmailLoginModal({ visible, onClose, onSubmit, busy = false, error = "" 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [passwordVisible, setPasswordVisible] = useState(false);
   const isCreate = mode === "create";
 
   useEffect(() => {
@@ -1316,7 +1337,6 @@ function EmailLoginModal({ visible, onClose, onSubmit, busy = false, error = "" 
       setName("");
       setEmail("");
       setPassword("");
-      setPasswordVisible(false);
     }
   }, [visible]);
 
@@ -1342,27 +1362,7 @@ function EmailLoginModal({ visible, onClose, onSubmit, busy = false, error = "" 
           <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="you@example.com" placeholderTextColor="#6b7280" style={styles.deleteInput} />
 
           <Text style={styles.confirmLabel}>Password</Text>
-          <View style={styles.passwordInputRow}>
-            <TextInput
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry={!passwordVisible}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="Password"
-              placeholderTextColor="#6b7280"
-              style={styles.passwordInput}
-              onSubmitEditing={submit}
-            />
-            <TouchableOpacity
-              style={styles.passwordToggle}
-              onPress={() => setPasswordVisible((current) => !current)}
-              accessibilityRole="button"
-              accessibilityLabel={passwordVisible ? "Hide password" : "Show password"}
-            >
-              <Text style={styles.passwordToggleText}>{passwordVisible ? "Hide" : "Show"}</Text>
-            </TouchableOpacity>
-          </View>
+          <TextInput value={password} onChangeText={setPassword} secureTextEntry placeholder="Password" placeholderTextColor="#6b7280" style={styles.deleteInput} onSubmitEditing={submit} />
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
@@ -1377,49 +1377,6 @@ function EmailLoginModal({ visible, onClose, onSubmit, busy = false, error = "" 
           <TouchableOpacity style={styles.cancelDeleteButton} onPress={onClose} disabled={busy}>
             <Text style={styles.cancelDeleteText}>Cancel</Text>
           </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-function NewUserWalkthrough({ visible, onFinish }) {
-  const [step, setStep] = useState(0);
-  const slides = [
-    { icon: "⚔", title: "Welcome, Adventurer", text: "Dungeon Calendar helps your group find the best day to play without endless message threads." },
-    { icon: "🏰", title: "Create or Join", text: "Dungeon Masters can create campaigns and invite players. Players can join using their invitation." },
-    { icon: "📅", title: "Share Availability", text: "Mark the dates that work for you. The group can quickly see which session dates have the strongest attendance." },
-    { icon: "🔔", title: "Schedule and Remember", text: "Choose the final session date, review session details, and enable reminders so no one misses game night." },
-  ];
-
-  useEffect(() => {
-    if (visible) setStep(0);
-  }, [visible]);
-
-  const current = slides[step];
-  const lastStep = step === slides.length - 1;
-
-  return (
-    <Modal visible={visible} animationType="fade" transparent onRequestClose={onFinish}>
-      <View style={styles.confirmBackdrop}>
-        <View style={styles.walkthroughBox}>
-          <TouchableOpacity style={styles.walkthroughSkip} onPress={onFinish}>
-            <Text style={styles.walkthroughSkipText}>Skip</Text>
-          </TouchableOpacity>
-          <Text style={styles.walkthroughIcon}>{current.icon}</Text>
-          <Text style={styles.walkthroughTitle}>{current.title}</Text>
-          <Text style={styles.walkthroughText}>{current.text}</Text>
-          <View style={styles.walkthroughDots}>
-            {slides.map((_, index) => <View key={index} style={[styles.walkthroughDot, index === step ? styles.walkthroughDotActive : null]} />)}
-          </View>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => lastStep ? onFinish() : setStep((value) => value + 1)}>
-            <Text style={styles.primaryButtonText}>{lastStep ? "Start Planning" : "Next"}</Text>
-          </TouchableOpacity>
-          {step > 0 ? (
-            <TouchableOpacity style={styles.cancelDeleteButton} onPress={() => setStep((value) => Math.max(0, value - 1))}>
-              <Text style={styles.cancelDeleteText}>Back</Text>
-            </TouchableOpacity>
-          ) : null}
         </View>
       </View>
     </Modal>
@@ -2114,7 +2071,7 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout,
         <SettingsRow label="Plan Settings" detail={`${planLimits[normalizePlan(plan)].name} Plan`} onPress={() => navigate("plan")} />
         <SettingsRow label="Privacy Policy" detail="View privacy information" onPress={() => navigate("privacy")} />
         <SettingsRow label="Terms of Service" detail="View terms" onPress={() => navigate("terms")} />
-        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.24" onPress={() => navigate("about")} />
+        <SettingsRow label="About Dungeon Calendar" detail="Version 1.0.18" onPress={() => navigate("about")} />
       </Card>
       <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}><Text style={styles.logoutText}>Log Out</Text></TouchableOpacity>
       <TouchableOpacity style={styles.deleteAccountButton} onPress={openDeleteAccount}><Text style={styles.deleteAccountText}>Delete Account</Text></TouchableOpacity>
@@ -2427,7 +2384,7 @@ function AboutPage({ openSettings }) {
         <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.aboutLogo} resizeMode="contain" />
         <Text style={styles.aboutTitle}>Dungeon Calendar</Text>
         <Text style={styles.aboutKicker}>D&D Campaign Scheduling & Session Planning</Text>
-        <Text style={styles.sessionText}>Version 1.0.24</Text>
+        <Text style={styles.sessionText}>Version 1.0.16</Text>
         <TouchableOpacity style={styles.primaryButton} onPress={openDungeonCalendar}>
           <Text style={styles.primaryButtonText}>Open DungeonCalendar.com</Text>
         </TouchableOpacity>
@@ -2983,7 +2940,7 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
                 <Text style={styles.chevron}>›</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { onClose(); handleLogout(); }}>
               <Text style={[styles.menuItemText, { color: COLORS.red }]}>Log Out</Text>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
@@ -2993,28 +2950,6 @@ function SettingsModal({ visible, onClose, navigate, openDeleteAccount, handleLo
             </TouchableOpacity>
           </Card>
           </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-function LogoutConfirmModal({ visible, onCancel, onConfirm }) {
-  return (
-    <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
-      <View style={styles.confirmBackdrop}>
-        <View style={styles.confirmBox}>
-          <Text style={styles.confirmIcon}>↪</Text>
-          <Text style={styles.confirmTitle}>Log out?</Text>
-          <Text style={styles.confirmText}>
-            Are you sure you want to log out of Dungeon Calendar?
-          </Text>
-          <TouchableOpacity style={styles.deleteConfirmButton} onPress={onConfirm}>
-            <Text style={styles.deleteConfirmText}>Log Out</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelDeleteButton} onPress={onCancel}>
-            <Text style={styles.cancelDeleteText}>Cancel</Text>
-          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -3119,15 +3054,40 @@ export default function DungeonCalendarMobileApp() {
   const [emailAuthBusy, setEmailAuthBusy] = useState(false);
   const [emailAuthError, setEmailAuthError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-  const [walkthroughOpen, setWalkthroughOpen] = useState(false);
   const [campaigns, setCampaigns] = useState([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [syncStatus, setSyncStatus] = useState("connecting");
   const [userProfile, setUserProfile] = useState(null);
   const [userProfiles, setUserProfiles] = useState({});
   const notificationResponseRef = useRef(null);
+  const pendingDeepLinkRef = useRef(null);
+
+  useEffect(() => {
+    const captureDeepLink = (url) => {
+      const parsed = parseDungeonCalendarDeepLink(url);
+      if (parsed) pendingDeepLinkRef.current = parsed;
+    };
+
+    Linking.getInitialURL().then(captureDeepLink).catch(() => {});
+    const subscription = Linking.addEventListener("url", ({ url }) => captureDeepLink(url));
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingDeepLinkRef.current;
+    if (!pending || !user?.uid || campaigns.length === 0) return;
+    const linkedCampaign = campaigns.find((campaign) => campaign.id === pending.campaignId);
+    if (!linkedCampaign) {
+      setAuthError("This campaign link is not available to the signed-in account. Ask the Dungeon Master to invite this account, then open the link again.");
+      pendingDeepLinkRef.current = null;
+      return;
+    }
+    setSelectedCampaignId(linkedCampaign.id);
+    setRoute(pending.route);
+    setSettingsOpen(false);
+    pendingDeepLinkRef.current = null;
+  }, [user?.uid, campaigns]);
 
   useEffect(() => {
     if (Platform.OS === "web") return undefined;
@@ -3138,22 +3098,6 @@ export default function DungeonCalendarMobileApp() {
     });
     return () => subscription.remove();
   }, []);
-
-  useEffect(() => {
-    if (!user?.uid) {
-      setWalkthroughOpen(false);
-      return;
-    }
-    let active = true;
-    AsyncStorage.getItem(`dungeon-calendar:onboarding:${user.uid}`)
-      .then((completed) => {
-        if (active && completed !== "complete") setWalkthroughOpen(true);
-      })
-      .catch(() => {
-        if (active) setWalkthroughOpen(true);
-      });
-    return () => { active = false; };
-  }, [user?.uid]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -3413,11 +3357,9 @@ export default function DungeonCalendarMobileApp() {
     setEmailLoginOpen(true);
   };
 
-  const performLogout = async () => {
-    setLogoutConfirmOpen(false);
+  const handleLogout = async () => {
     setSettingsOpen(false);
     setDeleteAccountOpen(false);
-    setWalkthroughOpen(false);
     setAuthError("");
     try {
       await signOutGoogleProviderSafely();
@@ -3429,20 +3371,6 @@ export default function DungeonCalendarMobileApp() {
       setSelectedCampaignId(null);
       setUser(null);
       setRoute("dashboard");
-    }
-  };
-
-  const handleLogout = () => {
-    // Use an in-app modal instead of Alert.alert. Native alerts can be lost
-    // while the Settings modal is dismissing on some Android builds.
-    setSettingsOpen(false);
-    setTimeout(() => setLogoutConfirmOpen(true), 400);
-  };
-
-  const finishWalkthrough = async () => {
-    setWalkthroughOpen(false);
-    if (user?.uid) {
-      await AsyncStorage.setItem(`dungeon-calendar:onboarding:${user.uid}`, "complete").catch(() => {});
     }
   };
 
@@ -3551,13 +3479,7 @@ export default function DungeonCalendarMobileApp() {
           proposedDates={proposedDates}
           isDungeonMaster={isDungeonMaster}
         />
-        <LogoutConfirmModal
-          visible={logoutConfirmOpen}
-          onCancel={() => setLogoutConfirmOpen(false)}
-          onConfirm={() => { void performLogout(); }}
-        />
         <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleteAccount={async () => { await signOutGoogleProviderSafely(); await firebaseSignOut().catch(() => {}); setCampaigns([]); setUserProfile(null); setSelectedCampaignId(null); setUser(null); setRoute("dashboard"); }} />
-        <NewUserWalkthrough visible={walkthroughOpen} onFinish={finishWalkthrough} />
       </View>
     </BackgroundShell>
   );
@@ -3810,19 +3732,6 @@ const styles = StyleSheet.create({
   confirmText: { color: COLORS.muted, fontSize: 13, lineHeight: 20, textAlign: "center", marginBottom: 10 },
   confirmLabel: { color: COLORS.white, fontSize: 13, fontWeight: "800", marginTop: 8, marginBottom: 8 },
   deleteInput: { height: 48, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, color: COLORS.white, paddingHorizontal: 12, backgroundColor: COLORS.panel2, marginBottom: 12 },
-  passwordInputRow: { minHeight: 48, flexDirection: "row", alignItems: "center", borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.panel2, marginBottom: 12 },
-  passwordInput: { flex: 1, height: 46, color: COLORS.white, paddingHorizontal: 12 },
-  passwordToggle: { minWidth: 62, height: 46, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: COLORS.border },
-  passwordToggleText: { color: COLORS.gold, fontSize: 13, fontWeight: "900" },
-  walkthroughBox: { width: "100%", maxWidth: 420, backgroundColor: COLORS.bg, borderRadius: 18, borderWidth: 1, borderColor: COLORS.gold, padding: 22 },
-  walkthroughSkip: { alignSelf: "flex-end", paddingHorizontal: 6, paddingVertical: 4 },
-  walkthroughSkipText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
-  walkthroughIcon: { fontSize: 54, textAlign: "center", marginTop: 8, marginBottom: 14 },
-  walkthroughTitle: { color: COLORS.gold, fontSize: 25, fontWeight: "900", textAlign: "center", marginBottom: 12 },
-  walkthroughText: { color: COLORS.white, fontSize: 15, lineHeight: 23, textAlign: "center", minHeight: 92 },
-  walkthroughDots: { flexDirection: "row", justifyContent: "center", marginVertical: 18 },
-  walkthroughDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.border, marginHorizontal: 4 },
-  walkthroughDotActive: { width: 22, backgroundColor: COLORS.gold },
   deleteConfirmButton: { backgroundColor: COLORS.redDark, borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 4 },
   disabledButton: { opacity: 0.4 },
   deleteConfirmText: { color: COLORS.white, fontSize: 15, fontWeight: "900" },

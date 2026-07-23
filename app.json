@@ -3,14 +3,14 @@
     "name": "Dungeon Calendar",
     "slug": "dungeon-calendar",
     "scheme": "dungeoncalendar",
-    "version": "1.0.24",
+    "version": "1.0.23",
     "orientation": "portrait",
     "icon": "./assets/app-icon.png",
     "userInterfaceStyle": "dark",
     "description": "Dungeon Calendar helps tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures.",
     "android": {
       "package": "com.anonymous.dungeoncalendar",
-      "versionCode": 24,
+      "versionCode": 23,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "INTERNET",
@@ -19,6 +19,58 @@
         "INTERNET",
         "VIBRATE",
         "POST_NOTIFICATIONS"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "www.dungeoncalendar.com",
+              "pathPrefix": "/invite"
+            },
+            {
+              "scheme": "https",
+              "host": "www.dungeoncalendar.com",
+              "pathPrefix": "/campaign"
+            },
+            {
+              "scheme": "https",
+              "host": "www.dungeoncalendar.com",
+              "pathPrefix": "/results"
+            },
+            {
+              "scheme": "https",
+              "host": "www.dungeoncalendar.com",
+              "pathPrefix": "/calendar"
+            },
+            {
+              "scheme": "https",
+              "host": "dungeoncalendar.com",
+              "pathPrefix": "/invite"
+            },
+            {
+              "scheme": "https",
+              "host": "dungeoncalendar.com",
+              "pathPrefix": "/campaign"
+            },
+            {
+              "scheme": "https",
+              "host": "dungeoncalendar.com",
+              "pathPrefix": "/results"
+            },
+            {
+              "scheme": "https",
+              "host": "dungeoncalendar.com",
+              "pathPrefix": "/calendar"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
       ]
     },
     "plugins": [
