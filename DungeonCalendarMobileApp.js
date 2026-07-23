@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  AppState,
   Image,
   ImageBackground,
   Linking,
@@ -23,6 +24,8 @@ import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
 import * as ExpoNotifications from "expo-notifications";
 import Constants from "expo-constants";
+import * as LocalAuthentication from "expo-local-authentication";
+import * as SecureStore from "expo-secure-store";
 
 const nativeGoogleSignIn = Platform.OS !== "web" ? require("@react-native-google-signin/google-signin") : null;
 const GoogleSignin = nativeGoogleSignIn?.GoogleSignin || {
@@ -47,6 +50,36 @@ if (Platform.OS !== "web") {
 }
 
 const NOTIFICATION_TOKEN_FIELD = "expoPushTokens";
+const BIOMETRIC_ENABLED_KEY_PREFIX = "dungeonCalendar.biometric.enabled.";
+const BIOMETRIC_PROMPTED_KEY_PREFIX = "dungeonCalendar.biometric.prompted.";
+
+function biometricEnabledKey(uid) {
+  return `${BIOMETRIC_ENABLED_KEY_PREFIX}${uid}`;
+}
+
+function biometricPromptedKey(uid) {
+  return `${BIOMETRIC_PROMPTED_KEY_PREFIX}${uid}`;
+}
+
+async function deviceSupportsBiometrics() {
+  if (Platform.OS === "web") return false;
+  const [hasHardware, enrolled] = await Promise.all([
+    LocalAuthentication.hasHardwareAsync(),
+    LocalAuthentication.isEnrolledAsync(),
+  ]);
+  return hasHardware && enrolled;
+}
+
+async function requestBiometricAuthentication(promptMessage = "Unlock Dungeon Calendar") {
+  if (Platform.OS === "web") return { success: true };
+  return LocalAuthentication.authenticateAsync({
+    promptMessage,
+    promptSubtitle: "Use your fingerprint, face, or device security",
+    cancelLabel: "Cancel",
+    fallbackLabel: "Use device passcode",
+    disableDeviceFallback: false,
+  });
+}
 
 function notificationUserWantsEnabled(userProfile = {}) {
   const settings = safeObject(userProfile?.notificationSettings);
@@ -2059,7 +2092,7 @@ function InfoLine({ icon, text }) {
   return <View style={styles.infoLine}><Icon color={COLORS.gold}>{icon}</Icon><Text style={styles.infoText}>{text}</Text></View>;
 }
 
-function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout, plan }) {
+function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout, plan, biometricAvailable, biometricEnabled, biometricBusy, toggleBiometricLogin }) {
   return (
     <Screen>
       <Header title="User Settings" subtitle="Account and app settings" onSettings={openSettings} />
@@ -2067,6 +2100,11 @@ function UserSettings({ navigate, openSettings, openDeleteAccount, handleLogout,
         <Text style={styles.sectionTitle}>Account</Text>
         <SettingsRow label="Profile Information" detail="Name, email, avatar" onPress={() => navigate("profile")} />
         <SettingsRow label="Notifications" detail="Session reminders and invite updates" onPress={() => navigate("notifications")} />
+        <SettingsRow
+          label="Biometric Login"
+          detail={Platform.OS === "web" ? "Available in the installed mobile app" : biometricAvailable ? `${biometricEnabled ? "On" : "Off"} · Fingerprint, face, or device security` : "Not available or not enrolled on this device"}
+          onPress={biometricAvailable && !biometricBusy ? toggleBiometricLogin : undefined}
+        />
         <SettingsRow label="Campaign Settings" detail="Default campaign and session settings" onPress={() => navigate("campaignSettings")} />
         <SettingsRow label="Plan Settings" detail={`${planLimits[normalizePlan(plan)].name} Plan`} onPress={() => navigate("plan")} />
         <SettingsRow label="Privacy Policy" detail="View privacy information" onPress={() => navigate("privacy")} />
@@ -2881,6 +2919,23 @@ function ProfileEditScreen({ openSettings, user, userProfile, navigate }) {
   );
 }
 
+function BiometricLockScreen({ busy, error, onUnlock, onSignOut }) {
+  return (
+    <SafeAreaView style={styles.biometricLockScreen}>
+      <Image source={require("./assets/dungeon-calendar-logo.png")} style={styles.biometricLockLogo} resizeMode="contain" />
+      <Text style={styles.biometricLockTitle}>Dungeon Calendar Locked</Text>
+      <Text style={styles.biometricLockText}>Authenticate with your fingerprint, face, or device security to continue.</Text>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      <TouchableOpacity style={styles.primaryButton} onPress={onUnlock} disabled={busy}>
+        <Text style={styles.primaryButtonText}>{busy ? "Authenticating..." : "Unlock"}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.secondaryButton} onPress={onSignOut} disabled={busy}>
+        <Text style={styles.secondaryButtonText}>Sign Out Instead</Text>
+      </TouchableOpacity>
+    </SafeAreaView>
+  );
+}
+
 function SettingsRow({ label, detail, onPress }) {
   return (
     <TouchableOpacity style={styles.settingsRow} activeOpacity={0.8} onPress={onPress}>
@@ -3062,6 +3117,135 @@ export default function DungeonCalendarMobileApp() {
   const [userProfiles, setUserProfiles] = useState({});
   const notificationResponseRef = useRef(null);
   const pendingDeepLinkRef = useRef(null);
+  const biometricPromptShownRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricLocked, setBiometricLocked] = useState(false);
+  const [biometricBusy, setBiometricBusy] = useState(false);
+  const [biometricError, setBiometricError] = useState("");
+
+  const unlockWithBiometrics = async () => {
+    if (!user?.uid || !biometricEnabled || Platform.OS === "web") {
+      setBiometricLocked(false);
+      return true;
+    }
+    setBiometricBusy(true);
+    setBiometricError("");
+    try {
+      const result = await requestBiometricAuthentication("Unlock Dungeon Calendar");
+      if (result.success) {
+        setBiometricLocked(false);
+        return true;
+      }
+      setBiometricError("Authentication was not completed. Try again or sign out.");
+      return false;
+    } catch (error) {
+      setBiometricError(error?.message || "Biometric authentication is unavailable.");
+      return false;
+    } finally {
+      setBiometricBusy(false);
+    }
+  };
+
+  const enableBiometricLogin = async () => {
+    if (!user?.uid || Platform.OS === "web") return false;
+    setBiometricBusy(true);
+    setBiometricError("");
+    try {
+      const available = await deviceSupportsBiometrics();
+      setBiometricAvailable(available);
+      if (!available) {
+        Alert.alert("Biometric Login Unavailable", "Set up a fingerprint, face unlock, or device lock in Android Settings, then try again.");
+        return false;
+      }
+      const result = await requestBiometricAuthentication("Enable Biometric Login");
+      if (!result.success) return false;
+      await SecureStore.setItemAsync(biometricEnabledKey(user.uid), "true", { keychainAccessible: SecureStore.WHEN_UNLOCKED });
+      await SecureStore.setItemAsync(biometricPromptedKey(user.uid), "true", { keychainAccessible: SecureStore.WHEN_UNLOCKED });
+      setBiometricEnabled(true);
+      setBiometricLocked(false);
+      Alert.alert("Biometric Login Enabled", "Dungeon Calendar will require device authentication when you return to the app.");
+      return true;
+    } catch (error) {
+      Alert.alert("Could Not Enable Biometrics", error?.message || "Please try again.");
+      return false;
+    } finally {
+      setBiometricBusy(false);
+    }
+  };
+
+  const toggleBiometricLogin = async () => {
+    if (!user?.uid || biometricBusy) return;
+    if (biometricEnabled) {
+      Alert.alert("Turn Off Biometric Login?", "Dungeon Calendar will no longer require device authentication when opened.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Turn Off",
+          style: "destructive",
+          onPress: async () => {
+            await SecureStore.deleteItemAsync(biometricEnabledKey(user.uid)).catch(() => {});
+            setBiometricEnabled(false);
+            setBiometricLocked(false);
+          },
+        },
+      ]);
+      return;
+    }
+    await enableBiometricLogin();
+  };
+
+  useEffect(() => {
+    if (!user?.uid || Platform.OS === "web") {
+      setBiometricAvailable(false);
+      setBiometricEnabled(false);
+      setBiometricLocked(false);
+      biometricPromptShownRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const available = await deviceSupportsBiometrics().catch(() => false);
+      const enabled = (await SecureStore.getItemAsync(biometricEnabledKey(user.uid)).catch(() => null)) === "true";
+      const prompted = (await SecureStore.getItemAsync(biometricPromptedKey(user.uid)).catch(() => null)) === "true";
+      if (cancelled) return;
+      setBiometricAvailable(available);
+      setBiometricEnabled(enabled && available);
+      if (enabled && available) {
+        setBiometricLocked(true);
+      } else if (available && !prompted && !biometricPromptShownRef.current) {
+        biometricPromptShownRef.current = true;
+        await SecureStore.setItemAsync(biometricPromptedKey(user.uid), "true", { keychainAccessible: SecureStore.WHEN_UNLOCKED }).catch(() => {});
+        setTimeout(() => {
+          Alert.alert(
+            "Enable Biometric Login?",
+            "Unlock Dungeon Calendar faster with your fingerprint, face, or device security.",
+            [
+              { text: "Not Now", style: "cancel" },
+              { text: "Enable", onPress: enableBiometricLogin },
+            ]
+          );
+        }, 500);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      const wasBackground = /inactive|background/.test(appStateRef.current);
+      if (nextState === "active" && wasBackground && user?.uid && biometricEnabled) {
+        setBiometricLocked(true);
+      }
+      appStateRef.current = nextState;
+    });
+    return () => subscription.remove();
+  }, [user?.uid, biometricEnabled]);
+
+  useEffect(() => {
+    if (biometricLocked && biometricEnabled && user?.uid) unlockWithBiometrics();
+  }, [biometricLocked, biometricEnabled, user?.uid]);
 
   useEffect(() => {
     const captureDeepLink = (url) => {
@@ -3370,6 +3554,8 @@ export default function DungeonCalendarMobileApp() {
       setUserProfiles({});
       setSelectedCampaignId(null);
       setUser(null);
+      setBiometricLocked(false);
+      setBiometricEnabled(false);
       setRoute("dashboard");
     }
   };
@@ -3401,6 +3587,10 @@ export default function DungeonCalendarMobileApp() {
     userProfiles,
     plan,
     billingInterval,
+    biometricAvailable,
+    biometricEnabled,
+    biometricBusy,
+    toggleBiometricLogin,
   };
 
   const screen = useMemo(() => {
@@ -3463,6 +3653,19 @@ export default function DungeonCalendarMobileApp() {
     );
   }
 
+  if (biometricLocked) {
+    return (
+      <BackgroundShell>
+        <BiometricLockScreen
+          busy={biometricBusy}
+          error={biometricError}
+          onUnlock={unlockWithBiometrics}
+          onSignOut={handleLogout}
+        />
+      </BackgroundShell>
+    );
+  }
+
   return (
     <BackgroundShell>
       <View style={styles.app}>
@@ -3510,6 +3713,10 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === "android" ? 48 : 18,
     paddingBottom: 118,
   },
+  biometricLockScreen: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 28, backgroundColor: "rgba(5, 5, 7, 0.92)" },
+  biometricLockLogo: { width: 132, height: 132, marginBottom: 18 },
+  biometricLockTitle: { color: COLORS.gold, fontSize: 26, fontWeight: "900", textAlign: "center", marginBottom: 10 },
+  biometricLockText: { color: COLORS.text, fontSize: 16, lineHeight: 23, textAlign: "center", marginBottom: 24, maxWidth: 420 },
   loginScreen: { flex: 1, backgroundColor: "transparent", alignItems: "center", justifyContent: "center", padding: 24 },
   loginLogo: { width: 190, height: 190, marginBottom: 16 },
   loginTitle: { color: COLORS.gold, fontSize: 34, fontWeight: "900", textAlign: "center" },

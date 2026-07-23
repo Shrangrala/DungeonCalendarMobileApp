@@ -75,7 +75,9 @@
     },
     "plugins": [
       "@react-native-google-signin/google-signin",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-local-authentication",
+      "expo-secure-store"
     ],
     "platforms": [
       "android",
