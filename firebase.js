@@ -1,7 +1,9 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
+import { getAuth, initializeAuth, getReactNativePersistence, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyCRSwIQxC_gpic-Z4o0Rb6mPhkf1yBguGI',
@@ -15,7 +17,21 @@ const firebaseConfig = {
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+let authInstance;
+if (Platform.OS === 'web') {
+  authInstance = getAuth(app);
+} else {
+  try {
+    authInstance = initializeAuth(app, {
+      persistence: getReactNativePersistence(AsyncStorage),
+    });
+  } catch (error) {
+    // Auth may already be initialized during Fast Refresh.
+    authInstance = getAuth(app);
+  }
+}
+
+export const auth = authInstance;
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 export { onAuthStateChanged };
