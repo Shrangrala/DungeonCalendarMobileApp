@@ -1,18 +1,10 @@
-# Build the Google Play production Android App Bundle (.aab)
-#
-# This workflow runs automatically whenever a commit is pushed to main.
-# It can also be run manually with:
-#   eas workflow:run build.yml
-#
-# Place this file at:
-#   .eas/workflows/build.yml
-
 name: Build Android for Google Play
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   android_production_build:
