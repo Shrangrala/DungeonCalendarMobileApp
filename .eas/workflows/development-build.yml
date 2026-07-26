@@ -1,7 +1,7 @@
 name: Build Android Development Client
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   android_development_build:
