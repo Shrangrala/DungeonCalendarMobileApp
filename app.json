@@ -94,6 +94,8 @@
     "updates": {
       "url": "https://u.expo.dev/979ae98a-0eb6-421c-830d-6feceb064b52"
     },
-    "ios": {}
+    "ios": {
+      "bundleIdentifier": "com.anonymous.dungeoncalendar"
+    }
   }
 }
